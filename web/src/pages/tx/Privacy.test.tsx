@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "../../components/test-utils";
 import type { Transaction, Vout } from "../../lib/esplora";
 import { checkPrivacy } from "../../lib/privacy";
-import { CardMarks, TxPrivacy, UnsentPrivacy } from "./Privacy";
+import { CardMarks, runs, TxPrivacy, UnsentPrivacy } from "./Privacy";
 
 const HOSTILE = '<img src=x onerror="alert(1)">bcrt1qhostile';
 
@@ -33,10 +33,10 @@ function payback(address: string): Transaction {
 
 describe("the list under the flow", () => {
   it("sets a hostile address as text, shortened, whole in its title", () => {
-    const el = mount(() => <TxPrivacy report={checkPrivacy(payback(HOSTILE))} />);
+    const el = mount(() => <TxPrivacy place="under" report={checkPrivacy(payback(HOSTILE))} />);
     expect(el.querySelector("img")).toBeNull();
     expect(el.querySelector("[onerror]")).toBeNull();
-    const shown = el.querySelector(".pv-item .hash__text");
+    const shown = el.querySelector(".pv-item .pv-addr");
     expect(shown?.getAttribute("title")).toBe(HOSTILE);
     expect(shown?.textContent).toBe(`${HOSTILE.slice(0, 8)}…${HOSTILE.slice(-8)}`);
     expect(el.querySelector("h3")?.textContent).toBe("What an observer can read");
@@ -46,7 +46,7 @@ describe("the list under the flow", () => {
   it("is one muted line for a clean transaction, with what it checks", () => {
     const t = payback("bcrt1qme");
     const clean: Transaction = { ...t, vout: [out("bcrt1qyou", 90_000, `0014${"22".repeat(20)}`)] };
-    const el = mount(() => <TxPrivacy report={checkPrivacy(clean)} />);
+    const el = mount(() => <TxPrivacy place="under" report={checkPrivacy(clean)} />);
     expect(el.querySelector(".pv-none")?.textContent).toBe(
       "Nothing in this transaction's shape stands out.",
     );
@@ -61,7 +61,7 @@ describe("the list under the flow", () => {
       vin: [{ txid: "a".repeat(64), vout: 0, is_coinbase: false, prevout: null }],
       vout: [out("bcrt1qyou", 90_000, `0014${"22".repeat(20)}`)],
     };
-    const el = mount(() => <TxPrivacy report={checkPrivacy(part)} />);
+    const el = mount(() => <TxPrivacy place="under" report={checkPrivacy(part)} />);
     expect(el.textContent).not.toContain("stands out");
     expect(el.querySelector(".pv-none")?.textContent).toBe(
       "Nothing was found in the part that could be checked.",
@@ -116,16 +116,97 @@ describe("marks on a card", () => {
       <span>
         <CardMarks
           marks={[
-            { text: "Reused address", tone: "caution" },
-            { text: "Equal amount", tone: "neutral" },
+            { text: "Reused address", short: "Reused", tone: "caution", kind: "reuse" },
+            { text: "Equal amount", short: "Equal", tone: "neutral", kind: "coinjoin" },
           ]}
         />
       </span>
     ));
-    expect([...el.querySelectorAll(".pv-tag")].map((t) => t.textContent)).toStrictEqual([
-      "Reused address",
-      "Equal amount",
+    expect(
+      [...el.querySelectorAll(".pv-tag")].map((t) => t.getAttribute("aria-label")),
+    ).toStrictEqual(["Reused address", "Equal amount"]);
+    expect([...el.querySelectorAll(".pv-tag__short")].map((t) => t.textContent)).toStrictEqual([
+      "Reused",
+      "Equal",
+    ]);
+    // Each a link to its finding in the list.
+    expect([...el.querySelectorAll("a.pv-tag")].map((t) => t.getAttribute("href"))).toStrictEqual([
+      "#pv-reuse",
+      "#pv-coinjoin",
     ]);
     expect(el.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+describe("a number in a sentence", () => {
+  it("takes the punctuation right after it, so the two never part, and leaves words alone", () => {
+    const n = (index: number) => ({ ref: "in" as const, index });
+    expect(
+      runs(["Inputs ", n(0), ", ", n(3), " and ", n(4), " spend from ", { address: "a" }, "."]),
+    ).toStrictEqual([
+      { text: "Inputs " },
+      { ref: "in", index: 0, tail: "," },
+      { text: " " },
+      { ref: "in", index: 3, tail: "" },
+      { text: " and " },
+      { ref: "in", index: 4, tail: "" },
+      { text: " spend from " },
+      { address: "a", tail: "." },
+    ]);
+    // Split as `says` once built it: ")" and ", and" as two pieces are still one tail.
+    expect(runs(["(input ", n(11), ")", ", and the other"])).toStrictEqual([
+      { text: "(input " },
+      { ref: "in", index: 11, tail: ")," },
+      { text: " and the other" },
+    ]);
+  });
+});
+
+describe("an address in a sentence", () => {
+  /** Inputs 0 and 1 both from `address`, to one output: "…spend from <address>: an observer…". */
+  function both(address: string): Transaction {
+    const me = out(address, 100_000, `0014${"33".repeat(20)}`);
+    const t = payback("bcrt1qunused");
+    return {
+      ...t,
+      vin: [0, 1].map((n) => ({
+        txid: String(n).repeat(64),
+        vout: 0,
+        is_coinbase: false,
+        prevout: me,
+      })),
+      vout: [out("bcrt1qyou", 190_000, `0014${"22".repeat(20)}`)],
+    };
+  }
+  const parts = (el: HTMLElement) => {
+    const addr = el.querySelector(".pv-item .pv-addr");
+    return {
+      parts: [...(addr?.querySelectorAll(".pv-addr__part") ?? [])].map((p) => p.textContent),
+      breaks: addr?.querySelectorAll("wbr").length,
+      breakAfterHead: addr?.querySelector(".pv-addr__part + wbr") !== null,
+    };
+  };
+
+  it("may break after its ellipsis only, and keeps the mark after it with its tail", () => {
+    const el = mount(() => (
+      <TxPrivacy place="under" report={checkPrivacy(both("bcrt1qaaaaaaaaaaaaaaaaaazzzz"))} />
+    ));
+    expect(parts(el)).toStrictEqual({
+      parts: ["bcrt1qaa…", "aaaazzzz:"],
+      breaks: 1,
+      breakAfterHead: true,
+    });
+  });
+
+  it("an ellipsis of its own in its first characters does not move the break", () => {
+    const el = mount(() => (
+      <TxPrivacy place="under" report={checkPrivacy(both("bc…1qaaaaaaaaaaaaaaaazzzz"))} />
+    ));
+    expect(parts(el).parts).toStrictEqual(["bc…1qaaa…", "aaaazzzz:"]);
+  });
+
+  it("a short one is whole, its mark kept with it", () => {
+    const el = mount(() => <TxPrivacy place="under" report={checkPrivacy(both("bcrt1qme"))} />);
+    expect(parts(el)).toStrictEqual({ parts: ["bcrt1qme:"], breaks: 0, breakAfterHead: false });
   });
 });

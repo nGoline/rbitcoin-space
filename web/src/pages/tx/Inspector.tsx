@@ -19,6 +19,7 @@ import {
 import { Code } from "./Code";
 import { ChainWords, type Selection } from "./Flow";
 import { MarkedAddress } from "./Lookalike";
+import { returnFocus } from "./flash";
 import { classify, disassemble, isText, lastPush, opReturnData } from "./script";
 import {
   coinbaseHeight,
@@ -85,16 +86,25 @@ export function Inspector(props: {
   ref: (el: HTMLHeadingElement) => void;
   /** Lookalike addresses handed over from an address page, by address. */
   lookalike?: ReadonlyMap<string, Lookalike> | undefined;
+  /** False for a transaction the node does not have: no output says whether it is spent. */
+  known?: boolean | undefined;
 }) {
   const title = () =>
     `${props.selected.side === "in" ? "Input" : "Output"} ${props.selected.index}`;
+  // Closed, they give the focus back to what opened them (flash.ts `returnFocus`), so a keyboard
+  // reader carries on from where they were.
+  const close = () => {
+    const { side, index } = props.selected;
+    props.onClose();
+    requestAnimationFrame(() => returnFocus(side, index));
+  };
   return (
     <section class="tx-inspector" id="tx-inspector" aria-labelledby="tx-inspector-title">
       <div class="tx-inspector__head">
         <h3 id="tx-inspector-title" tabindex="-1" ref={props.ref}>
           {title()}
         </h3>
-        <button class="btn" type="button" onClick={() => props.onClose()}>
+        <button class="btn" type="button" onClick={close}>
           Close
         </button>
       </div>
@@ -110,6 +120,7 @@ export function Inspector(props: {
               failed={props.outspends() === null}
               unspendable={whyUnspendable(props.tx, vout())}
               lookalike={props.lookalike}
+              known={props.known !== false}
             />
           )}
         </Match>
@@ -297,6 +308,7 @@ function OutputDetails(props: {
   failed: boolean;
   unspendable: string | null;
   lookalike: ReadonlyMap<string, Lookalike> | undefined;
+  known: boolean;
 }) {
   const kind = () => classify(props.vout.scriptpubkey);
   const data = createMemo(() =>
@@ -314,28 +326,31 @@ function OutputDetails(props: {
           </Show>
         </Fact>
         <Fact label="Script type">{kind().label}</Fact>
-        <Fact label="Spent">
-          <Switch fallback="Checking…">
-            <Match when={props.unspendable}>{(why) => <>{`Unspendable: ${why()}`}</>}</Match>
-            <Match when={props.failed}>
-              Could not check right now. Reload the page to try again.
-            </Match>
-            <Match when={props.spend?.spent === false}>No</Match>
-            <Match when={props.spend?.spent && props.spend.txid}>
-              {(by) => (
-                <span class="tx-outpoint">
-                  <Show when={props.spend?.status?.confirmed === false}>
-                    Being spent, unconfirmed, by{" "}
-                  </Show>
-                  <Hash value={by()} href={paths.tx(by())} copyLabel="Copy transaction ID" />
-                  <Show when={props.spend?.vin !== undefined}>
-                    <span class="num">, input {props.spend?.vin}</span>
-                  </Show>
-                </span>
-              )}
-            </Match>
-          </Switch>
-        </Fact>
+        {/* An output of a transaction nobody has yet is neither spent nor unspent. */}
+        <Show when={props.known || props.unspendable}>
+          <Fact label="Spent">
+            <Switch fallback="Checking…">
+              <Match when={props.unspendable}>{(why) => <>{`Unspendable: ${why()}`}</>}</Match>
+              <Match when={props.failed}>
+                Could not check right now. Reload the page to try again.
+              </Match>
+              <Match when={props.spend?.spent === false}>No</Match>
+              <Match when={props.spend?.spent && props.spend.txid}>
+                {(by) => (
+                  <span class="tx-outpoint">
+                    <Show when={props.spend?.status?.confirmed === false}>
+                      Being spent, unconfirmed, by{" "}
+                    </Show>
+                    <Hash value={by()} href={paths.tx(by())} copyLabel="Copy transaction ID" />
+                    <Show when={props.spend?.vin !== undefined}>
+                      <span class="num">, input {props.spend?.vin}</span>
+                    </Show>
+                  </span>
+                )}
+              </Match>
+            </Switch>
+          </Fact>
+        </Show>
       </dl>
       <div class="tx-codes">
         <Show when={data()}>

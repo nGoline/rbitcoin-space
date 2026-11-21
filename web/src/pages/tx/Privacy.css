@@ -26,44 +26,154 @@
     flex-wrap: wrap;
     gap: 0 var(--space-2);
   }
-  /* On a card, in its meta line beside the script type: the eye and a few words. */
+  /* On a card, in its meta line beside the script type: the eye and a few words, a link to its
+     finding with a 24 px target (WCAG 2.2). */
   .pv-tag {
     display: inline-flex;
     align-items: center;
     gap: 3px;
+    min-height: 24px;
     font-weight: var(--weight-medium);
-    overflow-wrap: anywhere;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  @media (hover: hover) {
+    .pv-tag:hover {
+      text-decoration: underline;
+    }
+  }
+  /* On a phone a card is 120 to 130 px wide: one word that never wraps, the full words its name
+     and in the list. */
+  .pv-tag__short {
+    display: none;
+  }
+  @media (max-width: 40em) {
+    .pv-tag__long {
+      display: none;
+    }
+    .pv-tag__short {
+      display: inline;
+    }
   }
   .pv-tag .pv-eye {
     width: 12px;
     height: 12px;
   }
-  .pv-tag--caution {
+  .pv-tag--caution,
+  .pv-tag--caution:hover {
     color: var(--color-caution);
   }
-  .pv-tag--neutral {
+  .pv-tag--neutral,
+  .pv-tag--neutral:hover {
     color: var(--color-text);
+  }
+
+  /* An input's or output's number in a sentence: a link to its card, a chip as narrow as its
+     digits with a little room each side, so punctuation after it sits right against it. Its target
+     reaches 24 px each way past the chip without changing the line's height (WCAG 2.2 target
+     size); one digit and ", " put neighbours' centres 25 px apart, so targets never overlap. */
+  .pv-ref {
+    position: relative;
+    display: inline-block;
+    padding: 0 5px;
+    border-radius: var(--radius-s);
+    background: var(--color-surface-sunken);
+    font-weight: var(--weight-medium);
+    line-height: inherit;
+    text-align: center;
+    text-decoration: none;
+  }
+  .pv-ref::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 24px);
+    height: 24px;
+    transform: translate(-50%, -50%);
+  }
+  /* An address in a sentence: the site's monospace, set as text; a line may break after its "…"
+     only (Privacy.tsx). */
+  .pv-addr {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    font-variant-numeric: slashed-zero;
+  }
+  .pv-addr__part {
+    white-space: nowrap;
+  }
+  /* A number and the punctuation after it never part across lines (an address keeps its own in
+     its tail, above). The mark sits against the chip, and the room a chip's target needs is taken
+     after the mark instead: in "0, 1, 2" neighbours' targets stay 24 px apart. */
+  .pv-ref-tail {
+    margin-right: 3px;
+    white-space: nowrap;
+  }
+  .pv-ref-tail > .pv-ref {
+    padding-right: 2px;
+  }
+  @media (hover: hover) {
+    .pv-ref:hover {
+      text-decoration: underline;
+    }
+  }
+
+  /* Where a link inside the page landed (flash.ts): outlined, fading. */
+  .is-flashed {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    animation: pv-flash 1.6s var(--ease-out) forwards;
+  }
+  @keyframes pv-flash {
+    60% {
+      outline-color: var(--color-focus);
+    }
+    to {
+      outline-color: transparent;
+    }
+  }
+  /* Reached from the keyboard, the focus ring is the outline, and it stays: no fade. */
+  .is-flashed:focus-visible {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .is-flashed {
+      animation: none;
+    }
   }
 
   .pv-title {
     font-size: var(--text-md);
     font-weight: var(--weight-bold);
   }
+  /* One column no wider than the panel, whatever a finding's longest word. */
   .pv-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-3);
     margin: 0;
     padding: 0;
     list-style: none;
   }
   .pv-item {
+    scroll-margin: calc(var(--header-h, 0px) + var(--space-4)) 0 var(--space-4);
+    border-radius: var(--radius-s);
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: var(--space-2);
     align-items: start;
   }
+  .pv-none > .pv-eye {
+    margin-top: calc((1lh - 14px) / 2);
+  }
   .pv-item > .pv-eye {
     margin-top: 0.2em;
+  }
+  /* Lines at least 24 px apart, every line alike: a number's 24 px target never reaches over one
+     on the line above or below. */
+  .pv-item__body,
+  .pv-partial {
+    line-height: max(24px, var(--leading-body) * 1em);
   }
   .pv-item__body {
     display: grid;
@@ -72,7 +182,17 @@
     max-width: 68ch;
   }
   .pv-item__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-2);
     font-weight: var(--weight-bold);
+  }
+  /* Moves to the next line whole rather than breaking, and wraps only when it is wider than the
+     line itself (large text on a phone). */
+  .pv-item__note {
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular);
   }
   .pv-reasons {
     display: grid;
@@ -84,10 +204,10 @@
   .pv-reasons li::marker {
     color: var(--color-text-muted);
   }
-  /* Nothing to show: one muted line. */
+  /* Nothing to show: one muted line, its eye on the first line when it wraps. */
   .pv-none {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-2);
     color: var(--color-text-muted);
   }
@@ -98,12 +218,25 @@
     max-width: 68ch;
     color: var(--color-text-muted);
   }
+  /* "What this checks", opened: its text starts where a finding's text does, the markers in the
+     eyes' gutter. */
   .pv-checks {
     display: grid;
-    gap: var(--space-1);
+    gap: var(--space-2);
     margin: 0;
-    padding-left: 1.1em;
+    padding-left: calc(14px + var(--space-2));
     list-style: disc;
+  }
+  .pv-terms,
+  .pv-checks ~ p {
+    padding-left: calc(14px + var(--space-2));
+  }
+  .pv-checks__readings {
+    display: grid;
+    gap: 2px;
+    margin: var(--space-1) 0;
+    padding-left: 1.4em;
+    list-style: decimal;
   }
 
   /* The transaction page: under the flow, in its panel, after a hairline. */
@@ -116,9 +249,26 @@
     font-size: var(--text-sm);
     min-width: 0;
   }
+  .pv-under,
+  .pv-rail {
+    scroll-margin-top: calc(var(--header-h, 0px) + var(--space-4));
+  }
   .pv-under .more,
-  .pv-send .more {
+  .pv-send .more,
+  .pv-rail .more {
     margin-top: calc(var(--space-2) * -1);
+  }
+
+  /* The transaction page, wide: a panel of its own in the side column, before "Details" with
+     something to report and after it with nothing, as narrow as the column. */
+  .pv-rail {
+    display: grid;
+    align-content: start;
+    gap: var(--space-3);
+    font-size: var(--text-sm);
+  }
+  .pv-rail .section__head {
+    margin-bottom: 0;
   }
 
   /* Broadcast and the decoder: a neutral notice above the action. */
@@ -132,5 +282,13 @@
     background: var(--color-surface);
     font-size: var(--text-sm);
     min-width: 0;
+  }
+  /* Wide, two findings across, each at a reading measure. */
+  @media (min-width: 65em) {
+    .pv-send .pv-list--many {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: var(--space-6);
+      row-gap: var(--space-4);
+    }
   }
 }

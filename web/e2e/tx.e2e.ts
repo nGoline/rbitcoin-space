@@ -20,7 +20,7 @@ test("a confirmed transaction names every output type and links where the money 
     await (wide ? expect(named).toBeVisible() : expect(named).toBeAttached());
   }
   await expect(outputs).toContainText(
-    "OP_RETURN0.00 000 000 BTCUnspendable“mempool.based regtest”",
+    "OP_RETURN0.00 000 000 BTC#6Unspendable“mempool.based regtest”",
   );
   // Amounts keep their unit for screen readers, though the cards show bare numbers.
   await expect(outputs.getByText("1.00 000 000 BTC", { exact: true }).first()).toBeAttached();
@@ -43,6 +43,11 @@ test("a coinbase shows as new coins and pays no fee", async ({ page, request }) 
   const block = await request.get(`/regtest/api/block/${chain.blocks[1]}/txid/0`);
   await page.goto(`/regtest/tx/${await block.text()}`);
   await expect(page.getByRole("list", { name: "Inputs" })).toContainText("Coinbase");
+  // Numbered like every other card, as its details button names it.
+  await expect(page.getByRole("list", { name: "Inputs" }).locator(".tx-flow__index")).toHaveText([
+    "#0",
+  ]);
+  await expect(page.getByRole("button", { name: "Details of input 0" })).toBeVisible();
   await expect(page.getByText("A coinbase,")).toBeVisible();
   // Long past the hundred blocks a reward waits for.
   await expect(page.getByText(/^Spendable: [\d\u202F]+ confirmations$/)).toBeVisible();
@@ -209,7 +214,10 @@ test("a confirmed transaction opens with its status, amount, fee and block", asy
   await expect(summary).toContainText("confirmations");
   await expect(summary).toContainText("Amount");
   await expect(summary).toContainText("sat/vB");
-  await expect(summary.getByRole("link")).toHaveAttribute("href", /\/regtest\/block\//);
+  await expect(summary.getByRole("link", { name: /^block / })).toHaveAttribute(
+    "href",
+    /\/regtest\/block\//,
+  );
   // The summary says what the steps would, so a settled transaction has none.
   await expect(page.getByRole("list", { name: "Status" })).toHaveCount(0);
 });

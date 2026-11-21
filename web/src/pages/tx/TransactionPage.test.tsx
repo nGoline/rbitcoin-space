@@ -949,6 +949,28 @@ describe("TransactionPage", () => {
     expect(rail.classList).not.toContain("tx-rail--open");
   });
 
+  it("a card's button pressed again closes its details and keeps the focus, never the page's", async () => {
+    serve(payment(confirmed), [{ spent: false }, { spent: false }]);
+    const el = page(`/tx/${TXID}`);
+    const buttons = () =>
+      el.querySelectorAll<HTMLButtonElement>(".tx-flow__col--out .tx-flow__open");
+    await vi.waitFor(() => expect(buttons()).toHaveLength(2));
+    const open = buttons()[1];
+    if (!open) throw new Error("no details button for output 1");
+    // Clicks that do not move the focus, as Safari's on a button do not.
+    open.click();
+    await vi.waitFor(() => {
+      const heading = el.querySelector("#tx-inspector-title");
+      expect(heading?.textContent).toBe("Output 1");
+      expect(document.activeElement).toBe(heading);
+    });
+    open.click();
+    await vi.waitFor(() => {
+      expect(el.querySelector("#tx-inspector")).toBeNull();
+      expect(document.activeElement).toBe(open);
+    });
+  });
+
   it("compares a confirmed replacement opened fresh, however long ago it confirmed", async () => {
     const OLD = "e".repeat(64);
     serve(payment(confirmed));
@@ -1293,7 +1315,7 @@ describe("TransactionPage", () => {
     expect(el.querySelector("img")).toBeNull();
     const card = el.querySelector(".tx-flow__col--out .tx-flow__item") as Element;
     expect(text(card)).toContain(
-      'OP_RETURN0.00 000 000 BTCUnspendable“<img src=x onerror="alert(1)">\\u{202e}”',
+      'OP_RETURN0.00 000 000 BTC#0Unspendable“<img src=x onerror="alert(1)">\\u{202e}”',
     );
     expect(text(card)).toContain("Unspendable");
     const open = card.querySelector<HTMLButtonElement>(".tx-flow__open");

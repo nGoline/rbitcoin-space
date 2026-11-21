@@ -813,6 +813,7 @@
     position: relative;
     display: grid;
     align-content: start;
+    gap: var(--space-5);
     min-width: 0;
   }
   /* Beside the flow it stays in view; an inspector covers it in the same room, so opening one
@@ -825,8 +826,16 @@
     overflow: auto;
     overscroll-behavior: contain;
   }
-  .tx-rail--open .tx-rail__details {
+  .tx-rail--open .tx-rail__details,
+  .tx-rail--open .pv-rail {
     visibility: hidden;
+  }
+  /* With the muted privacy panel under them, the details scroll with the page: held in view, they
+     would slide over it. With the findings above them they stay held, once the findings scroll by. */
+  .tx-rail__details:has(~ .pv-rail) {
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
   .tx-rail__over {
     position: absolute;
@@ -956,6 +965,32 @@
     font-weight: var(--weight-bold);
     white-space: nowrap;
   }
+  /* A card's number, as the privacy check's sentences name it: the quietest thing on the card. */
+  .tx-flow__index {
+    color: var(--color-text-muted);
+  }
+  .tx-flow__item {
+    scroll-margin: calc(var(--header-h, 0px) + var(--space-4)) 0 var(--space-4);
+  }
+  /* The summary's line to what an observer can read, on a narrow screen. */
+  /* The line to what an observer can read: a row of its own under the figures, so it never wraps
+     in a half-width cell; the eye on its first line, the whole a thumb's target. */
+  .tx-answer__cell--privacy {
+    flex-basis: 100%;
+    margin-top: calc(var(--space-4) * -1 + var(--space-1));
+  }
+  .tx-answer__privacy {
+    display: inline-grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-content: center;
+    column-gap: var(--space-1);
+    min-height: var(--touch);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+  .tx-answer__privacy > .pv-eye {
+    margin-top: calc((1lh - 14px) / 2);
+  }
   .tx-flow__meta {
     grid-area: meta;
     display: flex;
@@ -975,13 +1010,6 @@
   .tx-flow__col--out .tx-flow__item:not(.tx-flow__item--fee, .tx-flow__item--more) .tx-flow__meta {
     min-height: 24px;
     line-height: 24px;
-  }
-  /* With no address there is no type label before the link: marks that would open the line keep
-     the link's line above them until it arrives. */
-  .tx-flow__col--out
-    .tx-flow__item:not(.tx-flow__item--fee, .tx-flow__item--more)
-    .tx-flow__meta:has(> .pv-tags:first-child) {
-    padding-top: 24px;
   }
   /* The spent status and an unseen copy of its widest words in one cell: its width is fixed
      before the spends arrive. */

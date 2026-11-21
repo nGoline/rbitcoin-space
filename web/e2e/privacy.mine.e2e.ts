@@ -65,9 +65,41 @@ test("a transaction shaped like a CoinJoin is a neutral finding, with no change 
   const section = page.getByRole("region", { name: "What an observer can read" });
   await expect(section.getByText("Shaped like a CoinJoin", { exact: true })).toBeVisible();
   await expect(section).toContainText(
-    "Outputs 0, 1 and 2 each pay exactly 1.9999 BTC, each to a different address, and the inputs that fund it come from 3 different addresses.",
+    "Outputs 0, 1 and 2 each pay exactly 1.9999 BTC to a different address, and the inputs that fund it spend from 3 different addresses.",
   );
   await expect(section).not.toContainText("reads as change");
+  // "Outputs 0, 1 and 2": each number keeps its comma on its line, right against it, and the
+  // numbers' 24 px targets still do not overlap.
+  const tails = await section.locator(".pv-ref-tail").evaluateAll((spans) =>
+    spans.map((t) => {
+      const chip = t.querySelector(".pv-ref")?.getBoundingClientRect();
+      const r = document.createRange();
+      const mark = [...t.childNodes].find((n) => n instanceof Text && n.data.trim() !== "");
+      if (mark) r.selectNodeContents(mark);
+      const box = r.getBoundingClientRect();
+      return {
+        text: t.textContent,
+        lines: new Set([...t.getClientRects()].map((x) => Math.round(x.top))).size,
+        gap: Math.round(box.left - (chip?.right ?? 0)),
+      };
+    }),
+  );
+  expect(tails).toStrictEqual([{ text: "0,", lines: 1, gap: 0 }]);
+  const overlapped = await section.locator(".pv-ref").evaluateAll((as) =>
+    as.flatMap((a) => {
+      a.scrollIntoView({ block: "center" });
+      const r = a.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      return [-11, 11].flatMap((d) =>
+        [document.elementFromPoint(x + d, y), document.elementFromPoint(x, y + d)]
+          .map((e) => e?.closest("a"))
+          .filter((e) => e !== a)
+          .map(() => a.getAttribute("aria-label")),
+      );
+    }),
+  );
+  expect(overlapped).toStrictEqual([]);
   const outputs = page.getByRole("list", { name: "Outputs" });
   await expect(outputs.getByText("Equal amount")).toHaveCount(3);
   // Neutral: the open eye, in the text's colour, never the caution's.
@@ -94,10 +126,17 @@ test("a clean transaction is one muted line", async ({ page, rpc, mine }) => {
 
   await page.goto(`/regtest/tx/${clean}`);
   await expect(page.getByText("Nothing in this transaction's shape stands out.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "What an observer can read" })).toHaveCount(0);
+  // Wide, a panel of its own beside the flow, named like the others, after the details.
+  await expect(page.getByRole("heading", { name: "What an observer can read" })).toHaveCount(1);
+  await expect(page.locator(".tx-rail__details + #pv-list")).toBeVisible();
   await expect(page.locator(".tx-flow .pv-tag")).toHaveCount(0);
   await expect(page.getByText("What this checks")).toBeVisible();
   expect(await axe(page)).toStrictEqual([]);
+  // Narrow, under the flow: one muted line, no heading, and nothing in the summary.
+  await page.setViewportSize({ width: 360, height: 780 });
+  await expect(page.locator(".tx-main__flow .pv-none")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What an observer can read" })).toHaveCount(0);
+  await expect(page.locator(".tx-answer__privacy")).toHaveCount(0);
 });
 
 test.describe("past the check route's 100 lookups", () => {
@@ -134,13 +173,15 @@ test.describe("past the check route's 100 lookups", () => {
       });
       await expect(notice.locator(".pv-partial p")).toHaveText([
         "Only part of this transaction could be checked.",
-        "What input 100 spends is not known here, so these were not checked: the CoinJoin shape, outputs paying back to an input's address, script types and the least spent from one address.",
+        "What input 100 spends is not known here, so these were not checked: the CoinJoin shape, outputs paying back to an input's address, script types and the least spent from one funding address.",
         // Two paying outputs can be no CoinJoin, so the unknown coin cannot undo "spent together".
         "What it shows about address reuse and which output is change may be incomplete.",
       ]);
       // The hundred coins the route looked up are still read as spent together.
       await expect(notice.getByText("Coins spent together", { exact: true })).toBeVisible();
-      await expect(notice).toContainText("100 inputs are spent together, all from one address.");
+      await expect(notice).toContainText(
+        "100 inputs are spent together, all from one address: an observer may read them as one owner's.",
+      );
       // What the route did look up still reads: the 100 coins share one address.
       await expect(notice).toContainText("100 inputs spend from");
       await expect(notice).not.toContainText("stands out");

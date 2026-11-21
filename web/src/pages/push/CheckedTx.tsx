@@ -11,6 +11,7 @@ import type { Outspend } from "../../lib/esplora";
 import { formatSize, groupDigits, MISSING } from "../../lib/format";
 import { NETWORK_NAMES, paths } from "../../lib/network";
 import { useNetwork } from "../../lib/page";
+import { returnFocus } from "../tx/flash";
 import { Flow, type Selection } from "../tx/Flow";
 import { Inspector } from "../tx/Inspector";
 import { isCoinbase, totalOut, vsize } from "../tx/tx";
@@ -18,7 +19,15 @@ import { checkPrivacy } from "../../lib/privacy";
 import { UnsentPrivacy } from "../tx/Privacy";
 import { cardMarks, shownFindings } from "../tx/privacytext";
 import { markAttempted, wasAttempted } from "./attempted";
-import { broadcast, type Checked, needsSecondThought, rateOf, refusal, warnings } from "./push";
+import {
+  broadcast,
+  type Checked,
+  needsSecondThought,
+  rateOf,
+  refusal,
+  UNREADABLE,
+  warnings,
+} from "./push";
 import "../tx/TransactionPage.css";
 import "./Push.css";
 
@@ -61,12 +70,13 @@ export function CheckedTx(props: {
   const privacyMarks = createMemo(() =>
     shown() ? cardMarks(shownFindings(privacy(), state() === "unsent")) : undefined,
   );
+  // The node has it: it said so when checked, or it took it from this page just now. A press that
+  // got no answer, or a refusal, says nothing of the kind.
+  const known = () => props.c.known !== null || sent() !== undefined;
   // Nothing can spend a transaction the node does not have; one it has may be spent already.
-  const [spends] = createApi<Outspend[]>(() =>
-    props.c.known ? `/tx/${tx().txid}/outspends` : false,
-  );
+  const [spends] = createApi<Outspend[]>(() => (known() ? `/tx/${tx().txid}/outspends` : false));
   const outspends = (): Outspend[] | null | undefined => {
-    if (!props.c.known) return tx().vout.map(() => ({ spent: false }));
+    if (!known()) return undefined;
     return spends.state === "errored" ? null : spends.latest;
   };
   /** Why the last press did not send it. */
@@ -93,8 +103,11 @@ export function CheckedTx(props: {
     setWhy(undefined);
     broadcast(network(), props.hex, signal).then(
       (txid) => {
+        if (signal.aborted) return;
         setSending(false);
-        setSent(txid);
+        // Sent means the node took this transaction: a reply naming another is not that.
+        if (txid === tx().txid) setSent(txid);
+        else setWhy(UNREADABLE);
       },
       (e: unknown) => {
         if (signal.aborted) return;
@@ -109,7 +122,10 @@ export function CheckedTx(props: {
   const select = (s: Selection) => {
     const cur = selected();
     if (cur && cur.side === s.side && cur.index === s.index) {
+      // Its own button pressed again: closed like Close, the focus to that button (flash.ts).
+      // At once, not a frame later: the button is here now, and a later opener is never taken.
       setSelected(null);
+      returnFocus(s.side, s.index);
       return;
     }
     setSelected(s);
@@ -295,6 +311,7 @@ export function CheckedTx(props: {
           selected={selected()}
           onSelect={select}
           marks={privacyMarks()}
+          known={known()}
         />
         <Show when={selected()} keyed>
           {(s) => (
@@ -302,6 +319,7 @@ export function CheckedTx(props: {
               tx={tx()}
               selected={s}
               outspends={outspends}
+              known={known()}
               onClose={() => setSelected(null)}
               ref={(el) => {
                 inspectorHeading = el;

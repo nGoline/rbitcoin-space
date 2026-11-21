@@ -68,8 +68,9 @@ import {
 } from "./state";
 import { confirmations, features, isCoinbase, isTxid, lockTimeMeaning, vsize } from "./tx";
 import { checkPrivacy } from "../../lib/privacy";
-import { TxPrivacy } from "./Privacy";
-import { cardMarks, shownFindings } from "./privacytext";
+import { Eye, LIST_ID, TxPrivacy } from "./Privacy";
+import { cardMarks, countTone, sayCount, shownFindings } from "./privacytext";
+import { bringIntoView, returnFocus, setOpener } from "./flash";
 import { judgeFee, parentsOf, verdictDetail, verdictText, verdictTitle } from "./verdict";
 import "./TransactionPage.css";
 
@@ -767,20 +768,33 @@ function Body(props: {
   // after it loads. A coinbase has no sender to give away and shows nothing.
   const privacy = createMemo(() => checkPrivacy(props.tx));
   const privacyMarks = createMemo(() => cardMarks(shownFindings(privacy(), false)));
+  // Wide, the list is a panel of its own in the side column, first when it has something to say;
+  // narrower, it sits under the flow and the summary carries a line that leads to it
+  // (docs/DESIGN.md "Transaction").
+  // Findings, or only part checked: what the summary's line counts.
+  const reported = () => sayCount(privacy()) !== null;
+  const stackedQuery = matchMedia(`(max-width: ${STACKED})`);
+  const [stacked, setStacked] = createSignal(stackedQuery.matches);
+  const onStacked = (e: MediaQueryListEvent) => setStacked(e.matches);
+  stackedQuery.addEventListener("change", onStacked);
+  onCleanup(() => stackedQuery.removeEventListener("change", onStacked));
 
   // Wide, the inspector opens in the side panel beside the flow, so nothing moves; narrower, the
   // panel is under the flow, and what opened is brought into view.
   const select = (s: Selection) => {
     const cur = selected();
     if (cur && cur.side === s.side && cur.index === s.index) {
+      // Its own button pressed again: closed like Close, the focus to that button (flash.ts).
+      // At once, not a frame later: the button is here now, and a later opener is never taken.
       setSelected(null);
+      returnFocus(s.side, s.index);
       return;
     }
     setSelected(s);
-    const stacked = matchMedia(`(max-width: ${STACKED})`).matches;
+    const under = stacked();
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
     requestAnimationFrame(() => {
-      if (stacked) {
+      if (under) {
         inspectorHeading?.scrollIntoView({
           block: "nearest",
           behavior: reduce ? "auto" : "smooth",
@@ -1192,6 +1206,31 @@ function Body(props: {
             </Show>
           </dd>
         </div>
+        {/* Narrow, a row of its own under the figures: the list is under the flow, off the first
+            screen. Wide, the list opens the side column, in sight, so no row. */}
+        <Show when={stacked() && !privacy().coinbase && sayCount(privacy())}>
+          {(line) => (
+            <div class="tx-answer__cell tx-answer__cell--privacy">
+              <dt class="visually-hidden">Privacy</dt>
+              <dd>
+                <a
+                  class="tx-answer__privacy"
+                  href={`#${LIST_ID}`}
+                  // A link within the page: never the router's "current page".
+                  aria-current="false"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    const el = document.getElementById(LIST_ID);
+                    if (el) bringIntoView(el, el, "start");
+                  }}
+                >
+                  <Eye tone={countTone(privacy())} />
+                  <span>{line()}</span>
+                </a>
+              </dd>
+            </div>
+          )}
+        </Show>
       </dl>
       {/* The sentences behind the figures, one disclosure for the lot. */}
       <Switch>
@@ -1313,14 +1352,23 @@ function Body(props: {
             onSelect={select}
             lookalike={marks()}
             marks={privacyMarks()}
+            onMark={() => {
+              // The finding followed takes the focus; nothing is given back to the opener.
+              setOpener(null);
+              setSelected(null);
+            }}
           />
-          <Show when={!privacy().coinbase}>
-            <TxPrivacy report={privacy()} />
+          <Show when={stacked() && !privacy().coinbase}>
+            <TxPrivacy report={privacy()} place="under" />
           </Show>
         </section>
 
         {/* The facts that are left; an input's or output's inspector takes their place. */}
         <div class={["tx-rail", { "tx-rail--open": selected() !== null }]}>
+          {/* With something to report, the list opens the column, beside the marks it explains. */}
+          <Show when={!stacked() && !privacy().coinbase && reported()}>
+            <TxPrivacy report={privacy()} place="rail" />
+          </Show>
           <section class="tx-rail__details" aria-labelledby="tx-details-title">
             <SectionHeader title="Details" id="tx-details-title" />
             <dl class="tx-facts tx-facts--rail">
@@ -1405,6 +1453,10 @@ function Body(props: {
               {(r) => <Group relatives={r()} txid={props.tx.txid} rate={rate() ?? null} />}
             </Show>
           </section>
+          {/* Nothing to report: one muted panel, after the details. */}
+          <Show when={!stacked() && !privacy().coinbase && !reported()}>
+            <TxPrivacy report={privacy()} place="rail" />
+          </Show>
           {/* Keyed: each selection mounts fresh, so no "Show all" carries over to another item. */}
           <Show when={selected()} keyed>
             {(s) => (
