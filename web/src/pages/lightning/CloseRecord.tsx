@@ -2,17 +2,17 @@
 // ended, beside every channel's as last worked out, by week, and with whom. A record, not a
 // verdict: kinds keep their icon and word in the muted tone, and a force close is never the node's.
 import { createSignal, For, Show } from "solid-js";
+import type { JSX } from "@solidjs/web";
 import { formatDay, formatMoment } from "../../components/chart/scale";
 import { type Column, DataTable } from "../../components/DataTable";
 import { Link } from "../../components/Link";
 import { More } from "../../components/More";
 import { SectionHeader } from "../../components/SectionHeader";
 import { ErrorState, Loading } from "../../components/States";
-import { createRequest } from "../../lib/api";
+import { type ApiRequest, createRequest } from "../../lib/api";
 import { groupDigits, MISSING, truncateMiddle } from "../../lib/format";
 import { type Network, paths } from "../../lib/network";
 import {
-  type ByKind,
   CLOSE_WORDS,
   type CloseKind,
   count,
@@ -23,79 +23,92 @@ import {
   kindsIn,
   type NodeCloses,
   peersInWords,
+  peersShown,
+  percentOf,
   perClose,
   type RecordPeer,
   RECORD_WORDS,
+  recordInWords,
   shareText,
   type WeekRow,
   weekRows,
+  weeksInWords,
 } from "./lightning";
 import { Alias, ask, Tag } from "./parts";
 
-/**
- * The record's section. `gone`: for a node the graph no longer holds, whose page has nothing else
- * to show; the section appears only once its record answers with a close, and never says it failed.
- */
-export function CloseRecord(props: { network: Network; id: string; gone?: boolean }) {
-  const [answer, { refetch }] = createRequest(
-    () => props.id,
-    (id, signal) => ask(props.network, `/nodes/${id}/closes`, isNodeCloses, signal),
-  );
-  const shown = () => !props.gone || (answer.latest?.node.closed ?? 0) > 0;
+/** Asks for a node's record: its own request, so a page that needs the answer first can hold it. */
+export const askRecord = (network: Network, id: () => string): ApiRequest<NodeCloses> =>
+  createRequest(id, (key, signal) => ask(network, `/nodes/${key}/closes`, isNodeCloses, signal));
+
+/** The record's section, from a request made once by the page that shows it. */
+export function RecordSection(props: { request: ApiRequest<NodeCloses> }) {
+  const answer = () => props.request[0];
   return (
-    <Show when={shown()}>
-      <section aria-labelledby="ln-record-title" class="ln-record">
-        <SectionHeader title="Close record" id="ln-record-title">
-          <Show when={answer.latest} keyed>
-            {(r) => <Span record={r} />}
-          </Show>
-        </SectionHeader>
-        <Show
-          when={answer.latest}
-          keyed
-          fallback={
-            <Show
-              when={answer.state === "errored"}
-              fallback={<Loading label="Loading its close record" />}
-            >
-              <ErrorState
-                title="Could not load its close record"
-                error={answer.error}
-                retry={() => refetch()}
-              />
-            </Show>
-          }
-        >
-          {(r) => <Body record={r} gone={props.gone === true} />}
+    <section aria-labelledby="ln-record-title" class="ln-record">
+      <SectionHeader title="Close record" id="ln-record-title">
+        <Show when={answer().latest} keyed>
+          {(r) => <Span record={r} />}
         </Show>
-      </section>
-    </Show>
+      </SectionHeader>
+      <Show
+        when={answer().latest}
+        keyed
+        fallback={
+          <Show
+            when={answer().state === "errored"}
+            fallback={<Loading label="Loading its close record" />}
+          >
+            <ErrorState
+              title="Could not load its close record"
+              error={answer().error}
+              retry={() => props.request[1].refetch()}
+            />
+          </Show>
+        }
+      >
+        {(r) => <Body record={r} />}
+      </Show>
+    </section>
   );
 }
 
-/** A kind as its icon and word, in the muted tone whatever the kind: a tally is not a warning. */
+/**
+ * A kind as its icon and word, in the muted tone whatever the kind: a tally is not a warning. The
+ * one long word is shorter where a narrow screen or large text leaves no room; read in full.
+ */
 function Kind(props: { kind: CloseKind }) {
   return (
     <Tag icon={KIND_TAG[props.kind].icon} tone="muted">
-      {KIND_SHORT[props.kind]}
+      <Show when={props.kind === "cooperative"} fallback={KIND_SHORT[props.kind]}>
+        <span class="ln-record__long">{KIND_SHORT[props.kind]}</span>
+        <span class="ln-record__short" aria-hidden="true">
+          Co-op
+        </span>
+      </Show>
     </Tag>
   );
 }
 
-/** A share in words with its bar, this node's or every channel's. */
-function Share(props: { share: number; count: number; whose: "node" | "all" }) {
+/**
+ * A share in words with its bar, this node's or every channel's: two cells of the shares' grid, so
+ * the bars of a row start together. The bar repeats the figure beside it, so screen readers skip it.
+ */
+function Share(props: { share: number; count: number; whose: "node" | "all"; bar?: boolean }) {
+  const text = () => shareText(props.share, props.count);
   return (
-    <span class={`ln-record__share ln-record__share--${props.whose}`}>
+    <>
       {/* Only the figure is a figure: "all under 0.1%" may part between its words. */}
-      <span class="ln-record__words">
+      <span class={`ln-record__words ln-record__words--${props.whose}`}>
         {props.whose === "all" ? "all " : ""}
-        {shareText(props.share, props.count).startsWith("under ") ? "under " : ""}
-        <span class="num">{shareText(props.share, props.count).replace(/^under /, "")}</span>
+        {text().startsWith("under ") ? "under " : ""}
+        <span class="num">{text().replace(/^under /, "")}</span>
       </span>
-      <span class={`ln-record__bar ln-record__bar--${props.whose}`} aria-hidden="true">
-        <span style={{ "--w": `${Math.min(100, props.share)}%` }} />
-      </span>
-    </span>
+      <Show when={props.bar !== false}>
+        <span class={`ln-record__bar ln-record__bar--${props.whose}`} aria-hidden="true">
+          <span style={{ "--w": `${Math.min(100, props.share)}%` }} />
+        </span>
+      </Show>
+    </>
   );
 }
 
@@ -119,51 +132,30 @@ function Span(props: { record: NodeCloses }) {
   );
 }
 
-/** Peers listed before the reader asks for the rest. */
-const PEERS_SHOWN = 10;
-
 const sats = (n: number | null) => (n === null ? MISSING : groupDigits(n));
 
-function Body(props: { record: NodeCloses; gone: boolean }) {
+/**
+ * To the closed list under the record: its heading takes the focus, so the keyboard carries on
+ * from there. The heading is the shared section header's, so it is made focusable here.
+ */
+function toList(e: MouseEvent) {
+  const heading = document.getElementById("ln-node-closed-title");
+  if (heading === null) return;
+  e.preventDefault();
+  heading.setAttribute("tabindex", "-1");
+  heading.focus();
+  heading.scrollIntoView({ block: "start" });
+}
+
+/** Said once, where a reader meets the first force figure. */
+const BOTH_ENDS =
+  "A force close is in both nodes' records; the chain does not say which end broadcast it.";
+
+function Body(props: { record: NodeCloses }) {
   const r = () => props.record;
-  const net = () => r().network;
   const rated = () => r().node.shares !== null;
-  const kinds = () => kindsIn(r().node, net());
+  const forced = () => r().node.force + r().node.penalty > 0;
   const span = () => (r().from === null ? null : days(r().time - (r().from ?? r().time)));
-  const columns = (): Column<CloseKind>[] => [
-    {
-      header: "How it ended",
-      cell: (k) => (
-        <span class="ln-record__kind">
-          <Kind kind={k} />
-          <span class="ln-record__gloss">{RECORD_WORDS[k]}</span>
-        </span>
-      ),
-    },
-    { header: "Closes", numeric: true, cell: (k) => groupDigits(r().node[k]) },
-    {
-      header: rated() ? "Share" : "All channels",
-      sub: rated() ? "this node, then all" : "share",
-      cell: (k) => {
-        const n = net();
-        return (
-          <span class="ln-record__shares">
-            <Show when={r().node.shares}>
-              {(sh) => <Share share={sh()[k]} count={r().node[k]} whose="node" />}
-            </Show>
-            {n === null ? (
-              <span class="ln-record__all">{MISSING}</span>
-            ) : n.shares === null ? (
-              // Every channel's closes are too few for a share too: their count instead.
-              <span class="ln-record__all">all {groupDigits(n[k])}</span>
-            ) : (
-              <Share share={n.shares[k]} count={n[k]} whose="all" />
-            )}
-          </span>
-        );
-      },
-    },
-  ];
   return (
     <>
       <Show
@@ -179,28 +171,43 @@ function Body(props: { record: NodeCloses; gone: boolean }) {
             when={r().node.closed > 0}
             fallback={<>None of its channels closed in the {span()} this server has watched.</>}
           >
-            <strong class="num">{count(r().node.closed, "channel")}</strong> closed{" "}
+            {/* The way past the record to the list it sums up, from its first screen. */}
+            {/* rel="external" keeps the router out: it would mark this in-page link as the current page. */}
+            <a
+              class="ln-record__to-list"
+              href="#ln-node-closed-title"
+              rel="external"
+              onClick={toList}
+            >
+              <strong class="num">{count(r().node.closed, "channel")}</strong>
+            </a>{" "}
+            closed{" "}
             {r().capped
               ? `in the ${span() ?? ""} up to now: its newest closes, the most this record reads. It has older ones too.`
-              : `in the ${span() ?? ""} this server has watched.`}{" "}
-            Each close is in the record of both nodes of its channel.
+              : `in the ${span() ?? ""} this server has watched.`}
           </Show>
         </p>
       </Show>
       <Show when={r().node.closed > 0}>
-        <DataTable
-          caption="How its channels ended, beside every channel's as of the time above"
-          columns={columns()}
-          rows={kinds()}
-        />
-        <p class="ln-record__note">
-          {rated()
-            ? "A force close counts for both of its channel's nodes: the chain shows that one end broadcast a commitment transaction, not which end or why."
-            : `Shares are given from ${groupDigits(r().minimum)} closes; with ${groupDigits(r().node.closed)}, the counts say more than a share would. A force close counts for both of its channel's nodes: the chain does not say which end broadcast its commitment transaction.`}
-        </p>
-        <Fees record={r()} />
-        <Weeks record={r()} />
-        <Peers record={r()} gone={props.gone} />
+        <Show
+          when={rated()}
+          fallback={
+            <>
+              <Few record={r()} />
+              <p class="ln-record__note">
+                Shares are given from {groupDigits(r().minimum)} closes; with{" "}
+                {groupDigits(r().node.closed)}, the counts say more than a share would.
+                {forced() ? ` ${BOTH_ENDS}` : ""}
+              </p>
+              <details class="more ln-record__breakdown">
+                <summary class="more__summary">Show the breakdown</summary>
+                <Breakdown record={r()} />
+              </details>
+            </>
+          }
+        >
+          <Breakdown record={r()} />
+        </Show>
       </Show>
       <More label="How this record is made">
         <p>
@@ -237,51 +244,227 @@ function Body(props: { record: NodeCloses; gone: boolean }) {
   );
 }
 
+/**
+ * Too few closes for a share: the whole record in a line, by kind with its closing fees, beside
+ * every channel's, and the tables a press away.
+ */
+function Few(props: { record: NodeCloses }) {
+  const words = () => recordInWords(props.record);
+  return (
+    <div class="ln-record__few">
+      <ul class="ln-record__kinds" aria-label="Its closes by kind">
+        <For each={words().node}>
+          {(w) => (
+            <li>
+              <Tag icon={KIND_TAG[w.kind].icon} tone="muted">
+                <span class="num">{groupDigits(w.count)}</span> {KIND_SHORT[w.kind].toLowerCase()}
+              </Tag>
+              <span class="ln-record__all">{w.fees}</span>
+            </li>
+          )}
+        </For>
+      </ul>
+      <p class="ln-record__network">{words().network}</p>
+    </div>
+  );
+}
+
+/**
+ * The tables: how it ended across the panel, then on a wide screen the fees on the left beside the
+ * weeks over with whom; on a phone the weeks and with whom are folded to their sentences.
+ */
+function Breakdown(props: { record: NodeCloses }) {
+  return (
+    <div class="ln-record__grid">
+      <Ended record={props.record} />
+      <Fees record={props.record} />
+      <Weeks record={props.record} />
+      <Peers record={props.record} />
+    </div>
+  );
+}
+
+/**
+ * A part folded to its sentence on a phone and open on a wider screen, as the page first opened;
+ * the reader's own toggle is kept after that. The sentence stays in sight when `always`.
+ */
+function Fold(props: {
+  title: string;
+  line: JSX.Element;
+  /** Beside the heading while the part is open: a note that would otherwise take a line. */
+  aside?: JSX.Element;
+  always?: boolean;
+  class?: string | undefined;
+  children: JSX.Element;
+}) {
+  return (
+    <details
+      class={props.class === undefined ? "ln-record__fold" : `ln-record__fold ${props.class}`}
+      // Set once, as the page opens: an attribute here would be set again with the class (when a
+      // column drops), folding the part under the reader on a phone.
+      ref={(el) => {
+        el.open = !window.matchMedia("(max-width: 40em)").matches;
+      }}
+    >
+      <summary class="ln-record__summary">
+        <h3 class="ln-record__h">{props.title}</h3>
+        <Show when={props.aside}>
+          <span class="ln-record__aside">{props.aside}</span>
+        </Show>
+        <span
+          class={
+            props.always === true ? "ln-record__line" : "ln-record__line ln-record__line--closed"
+          }
+        >
+          {props.line}
+        </span>
+      </summary>
+      <div class="ln-record__part">{props.children}</div>
+    </details>
+  );
+}
+
+function Ended(props: { record: NodeCloses }) {
+  const r = () => props.record;
+  const net = () => r().network;
+  const rated = () => r().node.shares !== null;
+  const kinds = () => kindsIn(r().node, net());
+  const columns = (): Column<CloseKind>[] => [
+    {
+      header: "How it ended",
+      cell: (k) => (
+        <span class="ln-record__kind">
+          <Kind kind={k} />
+          {/* A kind with no close is one line: its words are in "How this record is made". */}
+          <Show when={r().node[k] > 0}>
+            <span class="ln-record__gloss">{RECORD_WORDS[k]}</span>
+          </Show>
+        </span>
+      ),
+    },
+    { header: "Closes", numeric: true, cell: (k) => groupDigits(r().node[k]) },
+    {
+      header: rated() ? "Share, this node then all" : "All channels",
+      // A phone has room for the word: "all" before every channel's figure says whose each is.
+      ...(rated() ? { short: "Share" } : {}),
+      // Under every channel's minimum too, their column holds counts, and says so.
+      ...(rated() ? {} : { sub: net()?.shares === null ? "closes" : "share" }),
+      cell: (k) => {
+        const n = net();
+        const sh = r().node.shares;
+        // A kind this node never closed by has no bar of its own: every channel's figure alone.
+        const own = sh !== null && r().node[k] > 0;
+        return (
+          <span class={own ? "ln-record__shares" : "ln-record__shares ln-record__shares--one"}>
+            <Show when={own && sh}>
+              {(s) => <Share share={s()[k]} count={r().node[k]} whose="node" />}
+            </Show>
+            {n === null ? (
+              <span class="ln-record__all">{MISSING}</span>
+            ) : n.shares === null ? (
+              // Too few for a share too: a count, said as one beside this node's shares.
+              <span class="ln-record__all">
+                {sh === null ? groupDigits(n[k]) : `all ${count(n[k], "close")}`}
+              </span>
+            ) : (
+              // Beside a node's counts the network's bar would read as the node's: words only.
+              <Share share={n.shares[k]} count={n[k]} whose="all" bar={own} />
+            )}
+          </span>
+        );
+      },
+    },
+  ];
+  return (
+    <div class="ln-record__part ln-record__part--wide ln-record__part--ended">
+      <DataTable
+        caption="How its channels ended, beside every channel's as of the time above"
+        columns={columns()}
+        rows={kinds()}
+        rowClass={(k) => (r().node[k] === 0 ? "ln-record__row--none" : undefined)}
+      />
+      <Show when={rated() && r().node.force + r().node.penalty > 0}>
+        <p class="ln-record__note">{BOTH_ENDS}</p>
+      </Show>
+    </div>
+  );
+}
+
 function Fees(props: { record: NodeCloses }) {
+  const [dropped, setDropped] = createSignal(0);
   const r = () => props.record;
   const kinds = () => kindsIn(r().node);
+  const all = (k: CloseKind) => {
+    const n = r().network;
+    return n === null ? MISSING : sats(perClose(n.fees[k]));
+  };
   const columns = (): Column<CloseKind>[] => [
-    { header: "Closing transactions", cell: (k) => <Kind kind={k} /> },
     {
-      // In all, and a close's mean under it: one column, so the table fits a phone.
-      header: "In all",
-      sub: "sats",
-      numeric: true,
+      header: "Closing transactions",
+      short: "Closes",
       cell: (k) => (
-        <span class="ln-record__fee">
-          {/* Two figures, spoken apart: read as one they make one large number. */}
-          <span class="visually-hidden">
-            {r().node.fees[k].known === 0
-              ? "No fee known."
-              : `${groupDigits(r().node.fees[k].sum)} sats in all. ${sats(perClose(r().node.fees[k]))} sats a close.`}
-          </span>
-          <span aria-hidden="true">
-            {r().node.fees[k].known === 0 ? MISSING : groupDigits(r().node.fees[k].sum)}
-          </span>
-          <span class="ln-record__all" aria-hidden="true">
-            <span class="num">{sats(perClose(r().node.fees[k]))}</span> a{"\u00A0"}close
+        <span class="ln-record__cell">
+          <Kind kind={k} />
+          {/* Where the last column has no room, its figure is this row's second line. */}
+          <span class="ln-record__second ln-record__second--fit">
+            All channels: <span class="num">{all(k)}</span>
+            {all(k) === MISSING ? "" : " sats a close"}
           </span>
         </span>
       ),
     },
     {
+      // In all, and a close's mean under it: one column, so the table fits a phone. The unit in
+      // the heading itself, which is what labels the figure where the table is cards.
+      header: "In all, sats",
+      numeric: true,
+      cell: (k) => {
+        const f = () => r().node.fees[k];
+        return (
+          <Show when={f().known > 0} fallback={MISSING}>
+            <span class="ln-record__fee">
+              {/* Two figures, spoken apart: read as one they make one large number. */}
+              <span class="visually-hidden">
+                {`${groupDigits(f().sum)} sats in all. ${sats(perClose(f()))} sats a close.`}
+              </span>
+              <span aria-hidden="true">{groupDigits(f().sum)}</span>
+              <span class="ln-record__all" aria-hidden="true">
+                <span class="num">{sats(perClose(f()))}</span> a{" "}close
+              </span>
+            </span>
+          </Show>
+        );
+      },
+    },
+    {
       header: "All channels",
       sub: "a close, sats",
       numeric: true,
-      cell: (k) => {
-        const n = r().network;
-        return n === null ? MISSING : sats(perClose(n.fees[k]));
-      },
+      // Kept on a phone, where it fits at the usual text size; dropped only where it does not.
+      drop: 1,
+      cell: (k) => (
+        <>
+          {/* Where the table is cards, the heading's unit is not over the figure: said in full. */}
+          <span class="ln-record__card">All channels: </span>
+          {all(k)}
+          <Show when={all(k) !== MISSING}>
+            <span class="ln-record__card"> sats a close</span>
+          </Show>
+        </>
+      ),
     },
   ];
   const unknown = () => kinds().reduce((a, k) => a + r().node[k] - r().node.fees[k].known, 0);
   return (
-    <div class="ln-record__part">
+    <div
+      class={`ln-record__part ln-record__part--fees${dropped() > 0 ? " ln-record__part--dropped" : ""}`}
+    >
       <h3 class="ln-record__h">Closing fees</h3>
       <DataTable
         caption="The fees of its channels' closing transactions, beside every channel's"
         columns={columns()}
         rows={kinds()}
+        onDropped={setDropped}
       />
       <p class="ln-record__note">
         The fee each closing transaction paid: the chain does not say which end paid it.
@@ -295,12 +478,59 @@ function Weeks(props: { record: NodeCloses }) {
   const [dropped, setDropped] = createSignal(0);
   const rows = () => weekRows(props.record.node.weeks, props.record.network?.weeks ?? null);
   const kinds = () => kindsIn(props.record.node);
+  /** Every channel's figure for a week: a share, a count under the minimum, or none yet. */
+  const all = (w: WeekRow) => {
+    const n = w.network;
+    if (n === null)
+      return (
+        <span>
+          <span aria-hidden="true">{MISSING}</span>
+          <span class="visually-hidden">
+            {/* The "Earlier" row sums several weeks: one of them missing withholds its figure. */}
+            {w.time === null
+              ? "No figure for all of these weeks yet"
+              : "No figure for this week yet"}
+          </span>
+        </span>
+      );
+    if (n.closed < props.record.minimum)
+      return `${groupDigits(n.forced)} of ${groupDigits(n.closed)}`;
+    return shareText(percentOf(n.forced, n.closed), n.forced);
+  };
+  /**
+   * The week's every-channel figure as the row's second line, one sentence in sight and to a
+   * screen reader alike; "under" is a word outside the figure, as in the shares.
+   */
+  const weekLine = (w: WeekRow) => {
+    const n = w.network;
+    if (n === null) return "No figure for all channels yet";
+    if (n.closed < props.record.minimum)
+      return (
+        <>
+          all <span class="num">{groupDigits(n.forced)}</span> of{" "}
+          <span class="num">{groupDigits(n.closed)}</span> force or penalty
+        </>
+      );
+    const text = shareText(percentOf(n.forced, n.closed), n.forced);
+    return (
+      <>
+        all {text.startsWith("under ") ? "under " : ""}
+        <span class="num">{text.replace(/^under /, "")}</span> force or penalty
+      </>
+    );
+  };
   const columns = (): Column<WeekRow>[] => [
     {
       header: "Week of",
       // "Monday, UTC" would hold the column wider than a phone allows; the note under says it.
       sub: "UTC",
-      cell: (w) => (w.time === null ? "Earlier" : formatDay(w.time)),
+      cell: (w) => (
+        <span class="ln-record__cell">
+          <span>{w.time === null ? "Earlier" : formatDay(w.time)}</span>
+          {/* Where the last column has no room, its figure is this row's second line. */}
+          <span class="ln-record__second">{weekLine(w)}</span>
+        </span>
+      ),
     },
     ...kinds().map((k): Column<WeekRow> => {
       const column: Column<WeekRow> = {
@@ -316,45 +546,24 @@ function Weeks(props: { record: NodeCloses }) {
       header: "All channels",
       sub: "force or penalty",
       numeric: true,
-      // Left out on a phone, which says so under the table.
+      // On a phone, or where it does not fit, the figure is the row's second line instead.
       optional: true,
-      cell: (w) => {
-        const n = w.network;
-        if (n === null)
-          return (
-            <span>
-              <span aria-hidden="true">{MISSING}</span>
-              <span class="visually-hidden">
-                {/* The "Earlier" row sums several weeks: one of them missing withholds its figure. */}
-                {w.time === null
-                  ? "No figure for all of these weeks yet"
-                  : "No figure for this week yet"}
-              </span>
-            </span>
-          );
-        if (n.closed < props.record.minimum)
-          return `${groupDigits(n.forced)} of ${groupDigits(n.closed)}`;
-        return shareText((n.forced * 100) / n.closed, n.forced);
-      },
+      cell: all,
     },
   ];
   return (
-    <div class="ln-record__part">
-      <h3 class="ln-record__h">Week by week</h3>
+    <Fold
+      title="Week by week"
+      line={weeksInWords(props.record.node.weeks)}
+      aside="Each from Monday, 00:00 UTC"
+      class={`ln-record__weeks${dropped() > 0 ? " ln-record__part--dropped" : ""}`}
+    >
       <DataTable
         caption="Its closes each week, newest first, beside every channel's"
         columns={columns()}
         rows={rows()}
         onDropped={setDropped}
       />
-      <p class="ln-record__note">Each week runs from Monday, 00:00 UTC.</p>
-      {/* Shown where the column is hidden: by a phone's breakpoint, or dropped to fit. */}
-      <p
-        class={`ln-record__note ln-record__phone${dropped() > 0 ? " ln-record__phone--dropped" : ""}`}
-      >
-        To fit the screen this table leaves out every channel's figure each week; a wider screen
-        shows it.
-      </p>
       <Show when={rows().some((w) => w.network === null)}>
         <p class="ln-record__note">
           {props.record.network === null
@@ -362,66 +571,69 @@ function Weeks(props: { record: NodeCloses }) {
             : "A dash: every channel's figures, worked out every ten minutes, do not reach that week yet."}
         </p>
       </Show>
-    </div>
+    </Fold>
   );
 }
 
-function Peers(props: { record: NodeCloses; gone: boolean }) {
+function Peers(props: { record: NodeCloses }) {
   const [dropped, setDropped] = createSignal(0);
   const base = () => paths.lightningNode(props.record.id);
   const [all, setAll] = createSignal(false);
-  const shown = () =>
-    all() ? props.record.peers.list : props.record.peers.list.slice(0, PEERS_SHOWN);
-  const hidden = () => props.record.peers.list.length - shown().length;
+  const shown = () => peersShown(props.record.peers.list, all());
   const anyPenalty = () => props.record.peers.list.some((p) => p.penalty > 0);
-  const share = (p: RecordPeer, k: keyof ByKind) =>
-    p.shares === null ? null : shareText(p.shares[k], p[k]);
+  // A breach moves a close from force to penalty: the two together are the closes not mutual,
+  // worked out from the counts (two rounded shares added can be a tenth off). Given where the
+  // server gives the peer's shares, from the minimum of closes.
+  const share = (p: RecordPeer) =>
+    p.shares === null || p.closed === 0
+      ? null
+      : shareText(percentOf(p.force + p.penalty, p.closed), p.force + p.penalty);
   const columns = (): Column<RecordPeer>[] => [
     {
       header: "Peer",
       cell: (p) => (
         <span class="ln-node-row2">
-          {/* A node the graph no longer holds has no closed list to filter: its peers lead to
-              their own pages, or are text where they have left too. */}
-          <Show
-            when={!props.gone}
-            fallback={
-              <Show when={p.held} fallback={<Alias alias={p.alias} max={24} />}>
-                <Link class="ln-node-peer" href={paths.lightningNode(p.id)}>
-                  <Alias alias={p.alias} max={24} />
-                </Link>
-              </Show>
-            }
+          {/* To the closed list below, filtered to this peer: a node that left the graph has one too. */}
+          <Link
+            class="ln-node-peer"
+            href={`${base()}?${new URLSearchParams({ view: "closed", peer: p.id }).toString()}`}
+            noscroll
+            title="Show only closes with this peer"
           >
-            <Link
-              class="ln-node-peer"
-              href={`${base()}?view=closed&peer=${p.id}`}
-              noscroll
-              title="Show only closes with this peer"
-            >
-              <Alias alias={p.alias} max={24} />
-            </Link>
-          </Show>
+            <Alias alias={p.alias} max={24} />
+          </Link>
           <span class="ln-key" title={p.id}>
             {truncateMiddle(p.id, 6, 4)}
+          </span>
+          {/* Where the last column has no room, its figure is this row's third line. */}
+          <span class="ln-record__second">
+            <span class="num">{groupDigits(p.open)}</span> open now
           </span>
         </span>
       ),
     },
     { header: "Force", numeric: true, cell: (p) => groupDigits(p.force) },
     ...(anyPenalty()
-      ? [{ header: "Penalty", numeric: true, cell: (p: RecordPeer) => groupDigits(p.penalty) }]
+      ? [
+          {
+            header: "Penalty",
+            short: "Pen.",
+            numeric: true,
+            cell: (p: RecordPeer) => groupDigits(p.penalty),
+          },
+        ]
       : []),
     {
       // Over the closes this record read: on a capped record a peer may have older ones too.
       header: props.record.capped ? "Closes" : "All closes",
-      sub: props.record.capped ? "with it, in this record" : "with this peer",
+      short: "Closes",
+      sub: props.record.capped ? "in this record" : "with it",
       numeric: true,
       cell: (p) => (
         <span class="ln-record__fee">
           <span>{groupDigits(p.closed)}</span>
-          <Show when={share(p, "force")}>
-            {(s) => <span class="ln-record__all">{s()} force</span>}
+          <Show when={share(p)}>
+            {(s) => <span class="ln-record__all">{s()} force or penalty</span>}
           </Show>
         </span>
       ),
@@ -430,48 +642,51 @@ function Peers(props: { record: NodeCloses; gone: boolean }) {
       header: "Open now",
       sub: "channels",
       numeric: true,
-      // Left out on a phone, which says so under the table.
+      // On a phone, or where it does not fit, the figure is under the peer instead.
       optional: true,
       cell: (p) => groupDigits(p.open),
     },
   ];
   return (
-    <div class="ln-record__part">
-      <h3 class="ln-record__h">With whom</h3>
-      <p class="ln-record__lead">
-        {peersInWords(props.record)}
-        {props.record.capped
+    <Fold
+      title="With whom"
+      always
+      line={`${peersInWords(props.record)}${
+        props.record.capped
           ? " These count the closes in this record, its newest; a peer may have older ones with it too."
-          : ""}
-      </p>
-      <Show when={props.record.peers.list.length > 0}>
+          : ""
+      }`}
+      // All shown on a wide screen, the peers take the panel's width as cards (CSS, :has).
+      class={`ln-record__peers${all() && shown().button !== null ? " ln-record__peers--all" : ""}${dropped() > 0 ? " ln-record__part--dropped" : ""}`}
+    >
+      <Show when={shown().rows.length > 0}>
         <DataTable
           caption="The other ends of its channels that ended in a force close or a penalty, most first"
           columns={columns()}
-          rows={shown()}
+          rows={shown().rows}
           onDropped={setDropped}
         />
-        {/* Shown where the column is hidden: by a phone's breakpoint, or dropped to fit. */}
-        <p
-          class={`ln-record__note ln-record__phone${dropped() > 0 ? " ln-record__phone--dropped" : ""}`}
-        >
-          To fit the screen this table leaves out how many channels with each peer are open now; a
-          wider screen shows it.
-        </p>
-        <Show when={hidden() > 0}>
+      </Show>
+      <Show when={shown().button}>
+        {(label) => (
           <div>
-            <button class="btn" type="button" onClick={() => setAll(true)}>
-              Show the other {count(hidden(), "peer")}
+            <button
+              class="btn"
+              type="button"
+              aria-expanded={all() ? "true" : "false"}
+              onClick={() => setAll((a) => !a)}
+            >
+              {label()}
             </button>
           </div>
-        </Show>
-        <Show when={props.record.peers.more > 0}>
-          <p class="ln-record__note">
-            And {count(props.record.peers.more, "more peer")} with a force close or a penalty.
-            {props.gone ? "" : " Filter its closed channels below by peer to see them."}
-          </p>
-        </Show>
+        )}
       </Show>
-    </div>
+      <Show when={props.record.peers.more > 0}>
+        <p class="ln-record__note">
+          And {count(props.record.peers.more, "more peer")} with a force close or a penalty. Filter
+          its closed channels below by peer to see them.
+        </p>
+      </Show>
+    </Fold>
   );
 }

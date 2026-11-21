@@ -2,6 +2,7 @@
 // pages say about them. Pure. Aliases are gossip, chosen by whoever runs the node (SECURITY.md
 // rule 14): they reach the page only as text, through cleanAlias.
 import { cap, recentMoment, share } from "../mempool/history";
+import { formatDay } from "../../components/chart/scale";
 import { formatBtcShort, groupDigits, MISSING, NNBSP } from "../../lib/format";
 
 export type State = "off" | "starting" | "syncing" | "synced" | "failed" | "stopped";
@@ -1611,6 +1612,10 @@ export const RECORD_WORDS: Record<CloseKind, string> = {
   other: "Not a close by either protocol: most likely a splice that added funds",
 };
 
+/** `part` of `whole` in percent, rounded to tenths as the server rounds the record's shares. */
+export const percentOf = (part: number, whole: number): number =>
+  Math.round((part * 1_000) / whole) / 10;
+
 /** A share as the record writes it: whole percent, one decimal under 10, "under 0.1%" above none, "0%" for none. */
 export function shareText(percent: number, closes: number): string {
   if (closes === 0) return "0%";
@@ -1686,20 +1691,117 @@ export function weekRows(
  * many peers, and the most with any one. Never who closed: the chain does not say.
  */
 export function peersInWords(r: NodeCloses): string {
-  const forced = r.node.force + r.node.penalty;
-  if (forced === 0) return "None of its channels ended in a force close or a penalty.";
-  const what =
-    r.node.penalty === 0
-      ? count(r.node.force, "force close")
-      : r.node.force === 0
-        ? count(r.node.penalty, "penalty", "penalties")
-        : `${count(r.node.force, "force close")} and ${count(r.node.penalty, "penalty", "penalties")}`;
-  const peers = r.peers.forced;
-  const top = r.peers.list[0];
+  const words = (force: number, penalty: number) =>
+    penalty === 0
+      ? count(force, "force close")
+      : force === 0
+        ? count(penalty, "penalty", "penalties")
+        : `${count(force, "force close")} and ${count(penalty, "penalty", "penalties")}`;
+  /** `n` closes on a channel whose two ends are this node: counted in its figures, no peer's. */
+  const own = (force: number, penalty: number) => {
+    const n = force + penalty;
+    return `${words(force, penalty)} ${n === 1 ? "was on a channel" : "were on channels"} whose two ends are this node.`;
+  };
+  const { force, penalty } = r.node;
+  if (force + penalty === 0) return "None of its channels ended in a force close or a penalty.";
+  const listed = r.peers.list;
+  // The route lists every peer with a force close or a penalty up to its limit: none listed means
+  // every one of them was on a channel whose two ends are this node.
+  if (listed.length === 0) return `The ${own(force, penalty)}`;
+  const lf = listed.reduce((a, p) => a + p.force, 0);
+  const lp = listed.reduce((a, p) => a + p.penalty, 0);
+  const top = listed[0];
   const most = top === undefined ? 0 : top.force + top.penalty;
-  // A close whose two ends are the node itself lists no peer: then nothing is said of peers.
-  if (r.peers.list.length === 0) return `The record holds ${what}.`;
-  if (forced === 1) return `The ${what} was on a channel with the peer below.`;
-  if (peers === 1) return `The ${what} were all on channels with one peer.`;
-  return `The ${what} were on channels with ${groupDigits(peers)} different peers, at most ${groupDigits(most)} with any one.`;
+  // Some peers left out: their closes and any on a channel whose two ends are this node cannot be
+  // told apart, so the record's totals are said, and the listed peers' apart, and no more.
+  if (r.peers.more > 0)
+    return `The record holds ${words(force, penalty)}. The ${count(listed.length, "peer")} with the most had ${words(lf, lp)}, at most ${groupDigits(most)} with any one.`;
+  const peers = r.peers.forced;
+  // True folded or open: the peer is in the list under the sentence, which may be folded away.
+  const sentence =
+    lf + lp === 1
+      ? `The ${words(lf, lp)} was on a channel with one peer.`
+      : peers === 1
+        ? `The ${words(lf, lp)} were all on channels with one peer.`
+        : `The ${words(lf, lp)} were on channels with ${groupDigits(peers)} different peers, at most ${groupDigits(most)} with any one.`;
+  // Every peer listed: what their counts do not add up to was on channels with no other end.
+  const rf = Math.max(0, force - lf);
+  const rp = Math.max(0, penalty - lp);
+  return rf + rp === 0 ? sentence : `${sentence} ${own(rf, rp)}`;
+}
+
+/** Peers listed before the reader asks for the rest. */
+const PEERS_SHOWN = 10;
+
+/**
+ * The peers a record lists, and the label of the button that shows the rest. Only the peers with
+ * more than one force close or penalty are listed at first: rows that each say 1 tell no more than
+ * the sentence above them. One peer alone is listed, as it says something of its own.
+ */
+export function peersShown(
+  peers: readonly RecordPeer[],
+  all: boolean,
+): { rows: readonly RecordPeer[]; button: string | null } {
+  if (peers.length <= 1) return { rows: peers, button: null };
+  const repeat = peers.filter((p) => p.force + p.penalty > 1);
+  const top = repeat.slice(0, PEERS_SHOWN);
+  const hidden = peers.length - top.length;
+  if (hidden === 0) return { rows: peers, button: null };
+  // Where folding the list back shows none of it, the button says it hides them all.
+  if (all)
+    return {
+      rows: peers,
+      button: repeat.length === 0 ? `Hide the ${count(peers.length, "peer")}` : "Show fewer peers",
+    };
+  const button =
+    repeat.length === 0
+      ? `Show the ${count(peers.length, "peer")}`
+      : repeat.length > top.length
+        ? `Show the other ${count(hidden, "peer")}`
+        : hidden === 1
+          ? "Show the peer with one"
+          : `Show the ${count(hidden, "peer")} with one each`;
+  return { rows: top, button };
+}
+
+/**
+ * A record too small for a share, in words: each kind it has with its count and closing fees, and
+ * every channel's shares (or counts, where they are too few for a share too) beside it.
+ */
+export function recordInWords(r: NodeCloses): {
+  node: { kind: CloseKind; count: number; fees: string }[];
+  network: string;
+} {
+  const node = CLOSE_KINDS.filter((k) => r.node[k] > 0).map((k) => {
+    const f = r.node.fees[k];
+    const fees =
+      f.known === 0
+        ? "fee not known"
+        : f.known < r.node[k]
+          ? `${groupDigits(f.sum)} sats in fees, ${groupDigits(r.node[k] - f.known)} not known`
+          : `${groupDigits(f.sum)} sats in fees`;
+    return { kind: k, count: r.node[k], fees };
+  });
+  const n = r.network;
+  if (n === null) return { node, network: "No figure for all channels yet." };
+  const kinds = kindsIn(r.node, n);
+  const parts = kinds.map((k) =>
+    n.shares === null
+      ? `${groupDigits(n[k])} ${KIND_SHORT[k].toLowerCase()}`
+      : `${shareText(n.shares[k], n[k])} ${KIND_SHORT[k].toLowerCase()}`,
+  );
+  return { node, network: `All channels: ${parts.join(", ")}.` };
+}
+
+/**
+ * A record's weeks in one sentence, for its folded table's summary: how many, from when, and the
+ * most closes in one of them.
+ */
+export function weeksInWords(weeks: readonly (ByKind & { time: number })[]): string {
+  const first = weeks[0];
+  if (first === undefined) return "No week in the record yet.";
+  const most = Math.max(...weeks.map((w) => sum(w)));
+  if (weeks.length === 1)
+    return `One week, from ${formatDay(first.time)}: ${count(sum(first), "close")}.`;
+  return `${count(weeks.length, "week")} from ${formatDay(first.time)}, at most ${count(most, "close")} in one.`;
 }

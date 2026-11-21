@@ -31,14 +31,15 @@ import {
   KIND_TAG,
   NAME_IN_TITLE,
   NODE_VIEWS,
+  type NodeCloses,
   type NodeDetail,
   type NodeHistory as HistoryAnswer,
   ordinal,
   readView,
   weekAgo,
 } from "./lightning";
-import { CloseRecord } from "./CloseRecord";
-import { ClosedList, OpenList } from "./NodeChannels";
+import { askRecord, RecordSection } from "./CloseRecord";
+import { type ClosedOf, ClosedList, OpenList } from "./NodeChannels";
 import { FeeFigures, NodeFees, NodeHistory, RecentChanges } from "./NodeCharts";
 import { ask, Gate, LightningNav, rememberList, SatsFig, Stat, Tag } from "./parts";
 import { dragScroll } from "../../components/dragScroll";
@@ -88,12 +89,7 @@ function Node(props: { network: Network; id: string }) {
     <Switch>
       <Match when={node.latest}>{(n) => <Body node={n()} network={props.network} />}</Match>
       <Match when={node.state === "errored" && isNotFound(node.error)}>
-        <NotFound
-          title="This server knows no such node"
-          text="It holds a node while the node has an open channel it checked against the chain. A node with only private or closed channels, or one that never announced a channel, is not here."
-        />
-        {/* A node that left still has the closes this server saw: shown when there are any. */}
-        <CloseRecord network={props.network} id={props.id} gone />
+        <Gone network={props.network} id={props.id} />
       </Match>
       <Match when={node.state === "errored"}>
         <ErrorState title="Could not load this node" error={node.error} retry={refetch} />
@@ -102,6 +98,110 @@ function Node(props: { network: Network; id: string }) {
         <Loading label="Loading the node" />
       </Match>
     </Switch>
+  );
+}
+
+/**
+ * A key the graph does not hold: a node whose channels have all closed still has the closes this
+ * server saw, so the page is headed with its key and shows them; a key with none is no node here.
+ */
+function Gone(props: { network: Network; id: string }) {
+  const request = askRecord(props.network, () => props.id);
+  const now = Math.floor(Date.now() / 1000);
+  const answer = () => request[0];
+  return (
+    <Switch>
+      <Match when={(answer().latest?.node.closed ?? 0) > 0 ? answer().latest : undefined}>
+        {(r) => (
+          <>
+            <GoneHeader id={props.id} />
+            <div class="ln-node-closed">
+              <RecordSection request={request} />
+              {/* Its closes are in the store, so its list is too: the same list a held node has. */}
+              <ClosedList node={closedOf(r())} network={props.network} now={now} />
+            </div>
+          </>
+        )}
+      </Match>
+      {/* Only a refusal says there is no such node: any other failure may pass, so it says so. */}
+      <Match when={answer().state === "errored" && !isNotFound(answer().error)}>
+        <ErrorState
+          title="Could not load this node"
+          error={answer().error}
+          retry={() => request[1].refetch()}
+        />
+      </Match>
+      <Match when={answer().state === "ready" || answer().state === "errored"}>
+        <NotFound
+          title="This server knows no such node"
+          text="It holds a node while the node has an open channel it checked against the chain. A node with only private or closed channels, or one that never announced a channel, is not here."
+        />
+      </Match>
+      <Match when={true}>
+        <Loading label="Loading the node" />
+      </Match>
+    </Switch>
+  );
+}
+
+/**
+ * The closed list's node from the record: the record reads the store the list reads, at the
+ * request, so its counts are the list's own; one capped at the newest closes is not the whole.
+ */
+const closedOf = (r: NodeCloses): ClosedOf => ({
+  id: r.id,
+  exact: !r.capped,
+  channels: {
+    closed: r.node.closed,
+    cooperative: r.node.cooperative,
+    force: r.node.force,
+    penalty: r.node.penalty,
+    other: r.node.other,
+  },
+});
+
+/**
+ * The Closed view of a node the graph holds: its record, and its list wherever either the node's
+ * answer (the index, up to 30 s old) or the record (the store, now) has a close, with the
+ * record's counts where it holds them all, so a close recorded since the node's answer is listed.
+ */
+function ClosedView(props: { node: NodeDetail; network: Network; now: number }) {
+  // Made once, here: a JSX prop is a getter, so a request made inside it is made on every read.
+  const request = askRecord(props.network, () => props.node.id);
+  const record = () => request[0].latest;
+  const listed = () => props.node.channels.closed > 0 || (record()?.node.closed ?? 0) > 0;
+  // The record's counts once it has a close: whole where it holds every close; where capped, a
+  // lower bound that establishes no count as the whole, so the list's total waits for the list.
+  const of = (): ClosedOf => {
+    const r = record();
+    return r === undefined || r.node.closed === 0 ? props.node : closedOf(r);
+  };
+  return (
+    <div class="ln-node-closed">
+      <RecordSection request={request} />
+      {/* With no close the record says so, once: an empty list under it would say it again. */}
+      <Show when={listed()}>
+        <ClosedList node={of()} network={props.network} now={props.now} />
+      </Show>
+    </div>
+  );
+}
+
+function GoneHeader(props: { id: string }) {
+  usePageTitle(() => `Lightning node ${props.id.slice(0, 20)}`);
+  return (
+    <header class="ln-node-head">
+      <div class="ln-node-head__title">
+        <h1 class="ln-node-head__key">{truncateMiddle(props.id, 8, 6)}</h1>
+        <CopyButton value={props.id} label="Copy public key" />
+      </div>
+      <p class="ln-node-head__line">
+        <span>
+          It has no open channel now, so this server no longer holds it as a node. Below is what it
+          holds: the record of its closes and its closed channels.
+        </span>
+      </p>
+    </header>
   );
 }
 
@@ -166,10 +266,7 @@ function Body(props: { node: NodeDetail; network: Network }) {
             <OpenList node={props.node} network={props.network} now={now} />
           </Match>
           <Match when={view() === "closed"}>
-            <div class="ln-node-closed">
-              <CloseRecord network={props.network} id={props.node.id} />
-              <ClosedList node={props.node} network={props.network} now={now} />
-            </div>
+            <ClosedView node={props.node} network={props.network} now={now} />
           </Match>
           <Match when={view() === "fees"}>
             <div class="ln-node-fees">

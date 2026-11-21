@@ -93,7 +93,7 @@ interface ListProps {
  * a slower earlier answer never replaces a newer one.
  */
 function useList<T>(
-  props: ListProps,
+  props: { node: { id: string }; network: Network },
   closed: boolean,
   check: (v: unknown) => v is ChannelPage<T>,
   first: () => ChannelPage<T> | undefined,
@@ -797,7 +797,18 @@ const CLOSED_SORTS = ["closed", "capacity", "fee", "lived"] as const;
 const lived = (c: ClosedChannel) =>
   c.funded === null ? null : Math.max(0, Math.floor((c.closed.block.time - c.funded) / 86_400));
 
-export function ClosedList(props: ListProps) {
+/**
+ * What the closed list needs of its node: its key and its closes by kind. A node the graph no
+ * longer holds has these from its close record, so its page lists its closes too.
+ */
+export interface ClosedOf {
+  id: string;
+  /** False where the counts are a lower bound (a record of the newest closes only). */
+  exact?: boolean;
+  channels: Pick<NodeDetail["channels"], "closed" | "cooperative" | "force" | "penalty" | "other">;
+}
+
+export function ClosedList(props: { node: ClosedOf; network: Network; now: number }) {
   const phone = usePhone();
   const l = useList(props, true, isClosedPage, () => undefined);
   const page = () => l.held()?.page;
@@ -888,14 +899,27 @@ export function ClosedList(props: ListProps) {
     const v = l.view();
     return v.q !== "" || v.peer !== null || v.kind !== null;
   };
-  const total = () => props.node.channels.closed;
+  // The whole list's count from its own unfiltered answer once it has one: the node's figure can
+  // be older than the list, or a lower bound.
+  const [whole, setWhole] = createSignal<number | undefined>(undefined);
+  createEffect(
+    () => (l.busy() || filtered() ? undefined : page()?.total),
+    (n) => {
+      if (n !== undefined) setWhole(n);
+    },
+  );
+  // Counts that are a lower bound name every kind, with no count: a kind may be among the rest.
+  const exact = () => props.node.exact !== false;
+  // The whole list's count: its own, or the node's where that is exact; otherwise not known, and
+  // then never given (a lower bound is not a total) and the list never said to be empty.
+  const total = () => whole() ?? (exact() ? props.node.channels.closed : undefined);
   return (
     <section aria-labelledby="ln-node-closed-title" class="ln-node-list">
       <SectionHeader title="Closed channels" id="ln-node-closed-title">
         Seen by this server
       </SectionHeader>
       <Show
-        when={total() > 0}
+        when={(total() ?? 1) > 0}
         fallback={
           <Empty title="No close seen">
             None of its channels closed while this server watched.
@@ -919,11 +943,19 @@ export function ClosedList(props: ListProps) {
               aria-current={l.view().kind === null ? "true" : "false"}
               noscroll
             >
-              All <span class="num muted">{groupDigits(total())}</span>
+              All
+              <Show when={total()}>
+                {(n) => (
+                  <>
+                    {" "}
+                    <span class="num muted">{groupDigits(n())}</span>
+                  </>
+                )}
+              </Show>
             </Link>
             <For each={CLOSE_KINDS}>
               {(k) => (
-                <Show when={props.node.channels[k] > 0}>
+                <Show when={!exact() || props.node.channels[k] > 0}>
                   <Link
                     class="btn ln-node-chip"
                     href={l.href({ kind: l.view().kind === k ? undefined : k })}
@@ -933,7 +965,9 @@ export function ClosedList(props: ListProps) {
                     <Tag icon={KIND_TAG[k].icon} tone={KIND_TAG[k].tone}>
                       {KIND_SHORT[k]}
                     </Tag>
-                    <span class="num muted">{groupDigits(props.node.channels[k])}</span>
+                    <Show when={exact()}>
+                      <span class="num muted">{groupDigits(props.node.channels[k])}</span>
+                    </Show>
                   </Link>
                 </Show>
               )}
@@ -954,11 +988,28 @@ export function ClosedList(props: ListProps) {
         <p class="ln-node-total" aria-live="polite" ref={l.mark}>
           <Show when={page()}>
             {(p) => (
-              <Show when={filtered()} fallback={<>{count(total(), "close")}</>}>
-                <span>
-                  <strong class="num">{groupDigits(p().total)}</strong> of {count(total(), "close")}{" "}
-                  match
-                </span>
+              <Show
+                when={filtered()}
+                // Unfiltered, the count is the whole list's once known; until then (its answer on
+                // its way, after a filter is cleared) the held page's count is not it.
+                fallback={<Show when={total()}>{(n) => <>{count(n(), "close")}</>}</Show>}
+              >
+                <Show
+                  when={total()}
+                  fallback={
+                    <span>
+                      <strong class="num">{groupDigits(p().total)}</strong>{" "}
+                      {p().total === 1 ? "close matches" : "closes match"}
+                    </span>
+                  }
+                >
+                  {(n) => (
+                    <span>
+                      <strong class="num">{groupDigits(p().total)}</strong> of {count(n(), "close")}{" "}
+                      match
+                    </span>
+                  )}
+                </Show>
               </Show>
             )}
           </Show>
