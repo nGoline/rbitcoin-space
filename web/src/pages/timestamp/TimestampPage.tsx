@@ -4,14 +4,17 @@
 // and that block's header. Everything read from the proof is shown as text, a calendar's address
 // included, which is never a link.
 import {
+  createContext,
   createEffect,
   createMemo,
   createSignal,
   For,
   Match,
   onCleanup,
+  onSettled,
   Show,
   Switch,
+  useContext,
 } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import { Link } from "../../components/Link";
@@ -84,6 +87,29 @@ async function readProofFile(file: File): Promise<ProofInput> {
   }
 }
 
+/**
+ * When a verdict may move the reader (docs/FRONTEND.md "Timestamp proofs"). It takes focus, and is
+ * brought into view, only where the reader's last action left them: focus still on what had it
+ * when they acted, or on nothing in particular (the page's body). Anywhere else it is announced in
+ * a live region and nothing moves.
+ */
+interface Attention {
+  /** A verdict has just been drawn. */
+  arrived: (article: HTMLElement, heading: HTMLElement) => void;
+  /** That verdict is gone: what was said of it goes too. */
+  gone: () => void;
+}
+const AttentionScope = createContext<Attention | null>(null);
+
+/** Focus to the heading, so a screen reader reads it; into view if it is not, instantly when still. */
+function bring(article: HTMLElement, heading: HTMLElement): void {
+  heading.focus({ preventScroll: true });
+  const r = heading.getBoundingClientRect();
+  if (r.top >= 0 && r.bottom <= window.innerHeight) return;
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? true;
+  article.scrollIntoView?.({ block: "start", behavior: still ? "instant" : "smooth" });
+}
+
 export default function TimestampPage() {
   usePageTitle(() => "Check a timestamp");
   const network = useNetwork();
@@ -96,6 +122,36 @@ export default function TimestampPage() {
   // removal makes it moot, whenever it finishes.
   let proofPick = 0;
   let job: AbortController | undefined;
+  // The attempt under way: what had focus when the reader last acted (chose, dropped, or pressed
+  // Enter in the digest field). Every way an attempt ends forgets it, so no earlier action can
+  // move the reader later.
+  let origin: Element | null = null;
+  const end = () => {
+    origin = null;
+  };
+  let result: HTMLElement | undefined;
+  // Written directly, not through a signal: emptied when its verdict goes and written when the
+  // next is drawn, each a change in the DOM even when the next says the same words.
+  let said: HTMLParagraphElement | undefined;
+  const attention: Attention = {
+    arrived(article, heading) {
+      const active = document.activeElement;
+      const take = active === null || active === document.body || active === origin;
+      end();
+      if (take) bring(article, heading);
+      else if (said) said.textContent = heading.textContent ?? "";
+    },
+    gone() {
+      if (said) said.textContent = "";
+    },
+  };
+  /** Enter in the digest field: the verdict now if it is there, else the next one when it comes. */
+  const ask = (field: HTMLElement) => {
+    const article = result?.querySelector<HTMLElement>(".ots-verdict");
+    const heading = article?.querySelector<HTMLElement>(".ots-verdict__title");
+    if (article && heading) bring(article, heading);
+    else origin = field;
+  };
 
   const proof = (): Proof | undefined => {
     const p = proofIn();
@@ -200,8 +256,9 @@ export default function TimestampPage() {
     );
   };
 
-  const chooseProof = (f: File | undefined) => {
+  const chooseProof = (f: File | undefined, from: Element | null) => {
     if (!f) return;
+    origin = from;
     const pick = ++proofPick;
     // The last proof and its verdict go at once: never a verdict beside a choice it is not for.
     setProofIn({ name: f.name, size: f.size, reading: true });
@@ -209,8 +266,9 @@ export default function TimestampPage() {
       if (pick === proofPick) setProofIn(p);
     });
   };
-  const chooseFile = (f: File | undefined) => {
+  const chooseFile = (f: File | undefined, from: Element | null) => {
     if (!f) return;
+    origin = from;
     setHex("");
     setFile(f);
   };
@@ -219,13 +277,8 @@ export default function TimestampPage() {
     <div class="wrap ots">
       <h1>Check a timestamp</h1>
       <p class="ots__lede">
-        An OpenTimestamps proof shows that a file existed before a certain Bitcoin block: it is a
-        short chain of hashes from the file to a value written into that block. Give this page the
-        proof and the file, and it follows the chain to the block on this server's own node.
-      </p>
-      <p class="ots__lede ots__lede--quiet">
-        Your file is read in your browser and never sent anywhere. The page asks this server only
-        for the block the proof names.
+        An OpenTimestamps proof shows that a file existed before a certain Bitcoin block. Your file
+        is read in your browser and never sent anywhere.
         <Show when={network() !== "mainnet"}>
           {" "}
           Bitcoin timestamps live on mainnet, so the block is looked up there, not on{" "}
@@ -242,81 +295,101 @@ export default function TimestampPage() {
           detail={proofIn() && formatSize(proofIn()?.size ?? 0, "B")}
           onChoose={chooseProof}
           onClear={() => {
+            end();
             proofPick++;
             setProofIn(undefined);
           }}
           clearLabel="Remove the proof"
+          changeLabel="the proof"
         />
         <Slot
           title="Your file"
-          hint={`Hashed here with ${HASH_NAMES[algorithm()]}, never uploaded`}
+          hint={
+            readDigest(hex(), algorithm()) === null
+              ? "Hashed here, never uploaded"
+              : "The digest below stands in for it"
+          }
           chosen={file()?.name}
           detail={file() && formatSize(file()?.size ?? 0, "B")}
           onChoose={chooseFile}
           onClear={() => {
+            end();
             cancel?.();
             setFile(undefined);
           }}
           clearLabel="Remove the file"
+          changeLabel="your file"
           filled={readDigest(hex(), algorithm()) !== null}
         >
           <Show when={running()}>
-            {(h) => <Progress done={h().done} total={h().total} onCancel={() => cancel?.()} />}
+            {(h) => (
+              <Progress
+                done={h().done}
+                total={h().total}
+                onCancel={() => {
+                  end();
+                  cancel?.();
+                }}
+              />
+            )}
           </Show>
           <Show when={hashing()?.kind === "cancelled"}>
             <p class="ots-slot__note">Hashing stopped. Choose the file again to start over.</p>
           </Show>
-          <Show when={!file()}>
-            <label class="ots-hex">
-              <span class="ots-hex__label">Or its {HASH_NAMES[algorithm()]}, in hex</span>
-              <input
-                class="ots-hex__input mono"
-                type="text"
-                name="digest"
-                autocomplete="off"
-                spellcheck={false}
-                autocapitalize="off"
-                aria-invalid={hexProblem() ? "true" : "false"}
-                aria-describedby="ots-hex-problem"
-                value={hex()}
-                onInput={(e) => setHex(e.currentTarget.value)}
-              />
-              <span id="ots-hex-problem" class="ots-slot__note ots-slot__note--bad">
-                {hexProblem() ?? ""}
-              </span>
-            </label>
-          </Show>
         </Slot>
       </div>
+      <Show when={!file()}>
+        <DigestField
+          name={HASH_NAMES[algorithm()]}
+          digits={DIGEST_LENGTH[algorithm()] * 2}
+          value={hex()}
+          problem={hexProblem()}
+          onInput={(v) => {
+            end();
+            setHex(v);
+          }}
+          onAsk={ask}
+        />
+      </Show>
 
-      <section class="ots-result" aria-label="Result">
-        <Switch>
-          <Match when={proofError()}>{(e) => <NotAProof error={e()} />}</Match>
-          <Match when={unreadable()}>
-            <Unreadable what="proof" />
-          </Match>
-          <Match when={file() && hashing()?.kind === "failed"}>
-            <Unreadable what="file" />
-          </Match>
-          <Match when={reading()}>
-            <Loading label="Reading the proof" />
-          </Match>
-          <Match when={!proof() || !digest()}>
-            <Waiting proof={proof() !== undefined} digest={digest() !== undefined} />
-          </Match>
-          <Match when={verdict.state === "errored" && !(verdict.error instanceof ProofError)}>
-            <ErrorState title="Could not check the block" error={verdict.error} retry={refetch} />
-          </Match>
-          <Match when={verdict.state === "errored"}>
-            <NotAProof error={verdict.error as ProofError} />
-          </Match>
-          <Match when={verdict.loading || !current(verdict.latest)}>
-            <Loading label="Checking the block" />
-          </Match>
-          <Match when={verdict.latest}>
-            {(r) => <Result v={r().v} digest={r().d} from={r().from} proof={proof()} />}
-          </Match>
-        </Switch>
+      <p ref={said} id="ots-said" class="visually-hidden" aria-live="polite" />
+      <section ref={result} class="ots-result" aria-label="Result">
+        <AttentionScope value={attention}>
+          <Switch>
+            <Match when={proofError()}>{(e) => <NotAProof error={e()} />}</Match>
+            <Match when={unreadable()}>
+              <Unreadable what="proof" />
+            </Match>
+            <Match when={file() && hashing()?.kind === "failed"}>
+              <Unreadable what="file" />
+            </Match>
+            <Match when={reading()}>
+              <Loading label="Reading the proof" />
+            </Match>
+            <Match when={!proof() || !digest()}>
+              <Waiting proof={proof() !== undefined} digest={digest() !== undefined} />
+            </Match>
+            <Match when={verdict.state === "errored" && !(verdict.error instanceof ProofError)}>
+              <Failed
+                error={verdict.error}
+                shown={end}
+                retry={() => {
+                  end();
+                  refetch();
+                }}
+              />
+            </Match>
+            <Match when={verdict.state === "errored"}>
+              <NotAProof error={verdict.error as ProofError} />
+            </Match>
+            <Match when={verdict.loading || !current(verdict.latest)}>
+              <Loading label="Checking the block" />
+            </Match>
+            <Match when={verdict.latest}>
+              {(r) => <Result v={r().v} digest={r().d} from={r().from} proof={proof()} />}
+            </Match>
+          </Switch>
+        </AttentionScope>
       </section>
     </div>
   );
@@ -329,9 +402,12 @@ function Slot(props: {
   accept?: string;
   chosen: string | undefined;
   detail: string | undefined;
-  onChoose: (f: File | undefined) => void;
+  /** A file chosen, and what had focus when it was: its input, or whatever had it at a drop. */
+  onChoose: (f: File | undefined, from: Element | null) => void;
   onClear: () => void;
   clearLabel: string;
+  /** Said after "Change" to a screen reader: which file it changes. */
+  changeLabel: string;
   /** Holds what it needs another way (a digest typed in): drawn as settled. */
   filled?: boolean;
   children?: JSX.Element;
@@ -345,6 +421,7 @@ function Slot(props: {
         {
           "ots-slot--over": over(),
           "ots-slot--full": props.chosen !== undefined || props.filled === true,
+          "ots-slot--chosen": props.chosen !== undefined,
         },
       ]}
       onDragOver={(e) => {
@@ -355,50 +432,128 @@ function Slot(props: {
       onDrop={(e) => {
         e.preventDefault();
         setOver(false);
-        props.onChoose(e.dataTransfer?.files[0]);
+        props.onChoose(e.dataTransfer?.files[0], document.activeElement);
       }}
     >
       <h2 class="ots-slot__title">{props.title}</h2>
-      <p class="ots-slot__hint">{props.hint}</p>
+      <p class="ots-slot__hint">
+        {props.hint}
+        <span class="ots-slot__drop"> · or drop it here</span>
+      </p>
       <div class="ots-slot__pick">
         <label class="btn ots-slot__choose">
-          {props.chosen === undefined ? "Choose a file" : "Choose another"}
+          {props.chosen === undefined ? (
+            "Choose a file"
+          ) : (
+            <>
+              Change<span class="visually-hidden"> {props.changeLabel}</span>
+            </>
+          )}
           <input
             ref={input}
             class="visually-hidden"
             type="file"
             {...(props.accept ? { accept: props.accept } : {})}
             onChange={(e) => {
-              props.onChoose(e.currentTarget.files?.[0]);
+              props.onChoose(e.currentTarget.files?.[0], e.currentTarget);
               // The same file chosen again is a new choice.
               e.currentTarget.value = "";
             }}
           />
         </label>
-        <span class="ots-slot__drop muted">or drop it here</span>
+        <Show when={props.chosen !== undefined}>
+          <button
+            class="ots-slot__clear tap"
+            type="button"
+            aria-label={props.clearLabel}
+            onClick={() => {
+              props.onClear();
+              input?.focus();
+            }}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 4l8 8M12 4l-8 8" />
+            </svg>
+          </button>
+        </Show>
       </div>
-      <Show when={props.chosen}>
-        {(name) => (
-          <p class="ots-slot__chosen">
-            <bdi class="ots-slot__name">{name()}</bdi>
-            <span class="muted num">{props.detail}</span>
-            <button
-              class="ots-slot__clear tap"
-              type="button"
-              aria-label={props.clearLabel}
-              onClick={() => {
-                props.onClear();
-                input?.focus();
-              }}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
-            </button>
-          </p>
-        )}
+      {/* The same test as the controls': a file whose name is empty still shows its size. */}
+      <Show when={props.chosen !== undefined}>
+        <p class="ots-slot__chosen">
+          <bdi class="ots-slot__name" title={props.chosen}>
+            {props.chosen}
+          </bdi>
+          <span class="muted num">{props.detail}</span>
+        </p>
       </Show>
       {props.children}
+    </div>
+  );
+}
+
+/**
+ * The digest instead of the file, under both slots: a field that shows all of it at once, wrapping
+ * on a phone, with what it takes said beside it and a control that clears it.
+ */
+function DigestField(props: {
+  name: string;
+  digits: number;
+  value: string;
+  problem: string | undefined;
+  onInput: (v: string) => void;
+  /** Enter: the reader is done typing and asks for the verdict. */
+  onAsk: (field: HTMLElement) => void;
+}) {
+  let field: HTMLTextAreaElement | undefined;
+  return (
+    <div class="ots-hex">
+      <label class="ots-hex__label" for="ots-hex">
+        Or its {props.name}, in hex, instead of the file
+      </label>
+      <span id="ots-hex-hint" class="ots-hex__hint">
+        {props.digits} characters, 0 to 9 and a to f
+      </span>
+      <div class="ots-hex__field">
+        <textarea
+          ref={field}
+          id="ots-hex"
+          class="ots-hex__input mono"
+          name="digest"
+          rows={3}
+          autocomplete="off"
+          spellcheck={false}
+          autocapitalize="off"
+          aria-invalid={props.problem ? "true" : "false"}
+          aria-describedby="ots-hex-hint ots-hex-problem"
+          value={props.value}
+          enterkeyhint="done"
+          onInput={(e) => props.onInput(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Enter is done typing (a digest holds no line breaks): the reader asks for the verdict.
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            props.onAsk(e.currentTarget);
+          }}
+        />
+        <Show when={props.value !== ""}>
+          <button
+            class="ots-slot__clear tap"
+            type="button"
+            aria-label="Clear the digest"
+            onClick={() => {
+              props.onInput("");
+              field?.focus();
+            }}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 4l8 8M12 4l-8 8" />
+            </svg>
+          </button>
+        </Show>
+      </div>
+      <span id="ots-hex-problem" class="ots-slot__note ots-slot__note--bad">
+        {props.problem ?? ""}
+      </span>
     </div>
   );
 }
@@ -446,6 +601,12 @@ const MESSAGES: Record<ProofError["kind"], string> = {
   malformed: "This proof breaks the format",
 };
 
+/** The block could not be looked up: the attempt is over, and a retry starts the next one. */
+function Failed(props: { error: unknown; retry: () => void; shown: () => void }) {
+  onSettled(() => props.shown());
+  return <ErrorState title="Could not check the block" error={props.error} retry={props.retry} />;
+}
+
 /** A file the browser could not read: nothing in it reached the page. */
 function Unreadable(props: { what: "proof" | "file" }) {
   return (
@@ -492,9 +653,20 @@ function Verdictbox(props: {
   title: JSX.Element;
   children?: JSX.Element;
 }) {
+  let article: HTMLElement | undefined;
+  let heading: HTMLHeadingElement | undefined;
+  const attention = useContext(AttentionScope);
+  onSettled(() => {
+    if (article && heading) attention?.arrived(article, heading);
+  });
+  onCleanup(() => attention?.gone());
   return (
-    <article class={`ots-verdict ots-verdict--${props.tone}`} aria-labelledby="ots-verdict-title">
-      <p class="ots-verdict__status" role="status">
+    <article
+      ref={article}
+      class={`ots-verdict ots-verdict--${props.tone}`}
+      aria-labelledby="ots-verdict-title"
+    >
+      <p class="ots-verdict__status">
         <svg class="ots-verdict__icon" viewBox="0 0 16 16" aria-hidden="true">
           <Show when={props.tone === "caution"} fallback={<circle cx="8" cy="8" r="6.5" />}>
             <circle cx="8" cy="8" r="6.5" stroke-dasharray="2.6 1.9" />
@@ -503,7 +675,7 @@ function Verdictbox(props: {
         </svg>
         {props.status}
       </p>
-      <h2 id="ots-verdict-title" class="ots-verdict__title">
+      <h2 ref={heading} id="ots-verdict-title" class="ots-verdict__title" tabindex="-1">
         {props.title}
       </h2>
       <div class="ots-verdict__body">{props.children}</div>
@@ -771,26 +943,34 @@ function Verified(props: {
         )
       }
     >
+      <dl class="ots-figures">
+        <div class="ots-figures__item">
+          <dt>Its header time</dt>
+          <dd>
+            <span class="ots-figures__value">
+              <TimeUtc time={c().block.time} />
+            </span>
+            <span class="ots-figures__sub">
+              <TimeAgo time={c().block.time} />
+            </span>
+          </dd>
+        </div>
+      </dl>
+      <p class="ots-figures__caveat">{headerTimeRule(c().height)}</p>
       <Show
         when={props.from === "file"}
         fallback={
           <p>
-            Whatever has this {name()} existed before block {groupDigits(c().height)}. This page has
-            not seen a file: it checked only the digest you gave, and cannot say which file that is.
+            Whatever has this {name()} existed before this block. This page has not seen a file: it
+            checked only the digest you gave, and cannot say which file that is.
           </p>
         }
       >
         <p>
-          This proves the file existed by the time block {groupDigits(c().height)} was mined. It
-          does not say who made the file or who held it, and it does not say the file was new then:
-          it may be older.
+          This proves the file existed by the time this block was mined. It does not say who made
+          the file or who held it, and it does not say the file was new then: it may be older.
         </p>
       </Show>
-      <p class="ots-when">
-        Block {groupDigits(c().height)}'s header time is <TimeUtc time={c().block.time} />,{" "}
-        <TimeAgo time={c().block.time} />.
-      </p>
-      <p>That time is the miner's claim. {headerTimeRule(c().height)}</p>
       <Show when={props.proof?.fileHash === "sha1"}>
         <p class="ots-caveat">
           This proof names the file by its SHA-1, and two different files can be made to share a
@@ -828,7 +1008,11 @@ function Also(props: { checks: Check[]; others: Leaf[]; except?: Check | undefin
         <For each={rest()}>
           {(c) => (
             <li>
-              Bitcoin block {groupDigits(c.height)}:{" "}
+              Bitcoin{" "}
+              <Show when={"block" in c && c.block} fallback={<>block {groupDigits(c.height)}</>}>
+                {(b) => <Link href={paths.block(b().hash)}>block {groupDigits(c.height)}</Link>}
+              </Show>
+              :{" "}
               {c.kind === "verified" ? (
                 <span class="ots-good">also verified</span>
               ) : c.kind === "mismatch" ? (
@@ -900,21 +1084,34 @@ function Work(props: {
   const reaches = () => toHex(props.leaf.message) === toHex(props.block.merkleRoot);
   const list = () => steps(props.digest, props.leaf, props.verified);
   const display = () => toHex(reversed(props.block.merkleRoot));
+  const [full, setFull] = createSignal(false);
+  /** A value as the steps show it: shortened, or whole when the reader asks. */
+  const shown = (hex: string) => (full() ? hex : truncateMiddle(hex));
   return (
     <More
       label={`Show the ${list().length} steps from ${props.from === "file" ? "your file" : "the digest"} to the block`}
     >
       <p>
-        Each step works on the value before it: a hash, or bytes added before or after it. The
-        values are shortened; hover or long-press one for all of it.
+        A proof is a short chain of steps from the file to a value written into a block, and this
+        page follows it to the block on this server's own node, asking it only for the blocks the
+        proof names. Each step works on the value before it: a hash, or bytes added before or after
+        it.
       </p>
-      <ol class="ots-steps">
+      <button
+        class="btn ots-steps__full"
+        type="button"
+        aria-pressed={full() ? "true" : "false"}
+        onClick={() => setFull(!full())}
+      >
+        Show the values in full
+      </button>
+      <ol class={["ots-steps", { "ots-steps--full": full() }]}>
         <li class="ots-step ots-step--end">
           <span class="ots-step__op">
             {props.from === "file" ? "Your file's digest" : "The digest you gave"}
           </span>
           <span class="ots-step__value mono" title={toHex(props.digest)}>
-            {truncateMiddle(toHex(props.digest))}
+            {shown(toHex(props.digest))}
           </span>
         </li>
         <For each={list()}>
@@ -942,21 +1139,21 @@ function Work(props: {
                       <>
                         {" "}
                         <span class="ots-step__arg mono" title={toHex(arg())}>
-                          {truncateMiddle(toHex(arg()))}
+                          {shown(toHex(arg()))}
                         </span>
                       </>
                     )}
                   </Show>
                 </span>
                 <span class="ots-step__value mono" title={toHex(s.result)}>
-                  {truncateMiddle(toHex(s.result))}
+                  {shown(toHex(s.result))}
                 </span>
                 <Show when={s.txid}>
                   {(txid) => (
                     <span class="ots-step__note">
                       This value has the form of a transaction id:{" "}
                       <Link class="mono" href={paths.tx(txid())}>
-                        {truncateMiddle(txid())}
+                        {shown(txid())}
                       </Link>
                     </span>
                   )}
@@ -972,12 +1169,12 @@ function Work(props: {
               : `Block ${groupDigits(props.block.height)}'s merkle root, as its header stores it: not the last value`}
           </span>
           <span class="ots-step__value mono" title={toHex(props.block.merkleRoot)}>
-            {truncateMiddle(toHex(props.block.merkleRoot))}
+            {shown(toHex(props.block.merkleRoot))}
           </span>
           <span class="ots-step__note">
             Explorers print it the other way round:{" "}
             <span class="mono" title={display()}>
-              {truncateMiddle(display())}
+              {shown(display())}
             </span>
           </span>
         </li>

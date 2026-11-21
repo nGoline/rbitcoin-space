@@ -683,21 +683,32 @@ It is read as soon as it is pasted, so the answer comes before the button: what 
 
 ```text
 Check a timestamp
-What a proof is, in two sentences. Your file never leaves this page.
-┌ Proof ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┐ ┌ Your file ─ ─ ─ ─ ─ ─ ─ ─ ─┐
-  [Choose a file] or drop it     [Choose a file] or drop it
-                                 Or its SHA-256, in hex [   ]
-└ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘ └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
+What a proof shows, in one sentence. Your file is read here and never sent.
+┌ Proof ─ ─ ─ [Choose a file] ┐ ┌ Your file ─ [Choose a file] ┐   empty: dashed
+  The .ots file · or drop it here  Hashed here, never uploaded · or drop it here
+Or its SHA-256, in hex, instead of the file       64 characters, 0 to 9 and a to f
+[6fd9c1c4f096b77e6d4457bac1c7f51010d318db483f2868d3795843f098d378               ] (×)
+┌ Proof            [Change] (×) ┐ ┌ Your file      [Choose a file] ┐   every state: two lines,
+  two-blocks.ots  1 768 B           The digest below stands in for it    the same height
 ┌ (✓ Verified) ─────────────────────────────────────────────┐
-│ This file existed before block 449 397                     │
-│ Block 449 397 was mined on 21 Jan 2017, 23:47:07 UTC       │
+│ This digest is committed to by block 449 397               │
+│ Its header time                                            │
+│ 21 Jan 2017, 23:47:07 UTC                                  │
+│ 3 590 days ago                                             │
+│ The header time is the miner's claim: … (one sentence)     │
 │ What it proves and what it does not                        │
-│ Also in this proof: other blocks, calendars (not checked)  │
-│ > Show the 47 steps from your file to the block            │
+│ Also in this proof: block 449 399 (a link), calendars      │
+│ > Show the 47 steps from the digest to the block           │
 └────────────────────────────────────────────────────────────┘
 ```
 
-The two inputs are drawn as the site draws what has not settled: a dashed outline while empty, solid once each holds its file, as a projected tile sets when mined. The verdict is the answer: a status pill with an icon and a word (positive Verified, caution Pending or Not checked, negative for a different file or a proof that does not verify), then the sentence that says it as the page title's size, and below it the one paragraph that says what a timestamp does and does not prove. The steps are a core drawn down the page: one line from the file's digest at the top to the block's merkle root at the bottom, a small square at each step, larger ones at the two ends. Side by side above 40em; stacked on a phone.
+The two inputs are drawn as the site draws what has not settled: a dashed outline while empty, solid once each holds its file (or, for "Your file", once a digest stands in for it), as a projected tile sets when mined. Every slot is the same lines in every state, so the two are always one height side by side (stacked, each is as tall as it holds, with no blank to fill): its label with its controls together at the right ("Choose a file", or "Change" and remove), which never shrink; then across the whole card what it takes ("The .ots file", "Hashed here, never uploaded", "The digest below stands in for it") or the file it holds, its name cut with an ellipsis only when it cannot fit (whole in its title) and its size never. Where the label and the controls do not fit side by side (a phone at large text), the controls go together onto the next line at the right; the label never shrinks under its words, and "Choose a file" wraps rather than leave the card at the largest text. Both slots' last control ends at the same inset. Remove is 44 px each way, as tall as Change beside it. "· or drop it here" ends the hint only where a pointer can drop and the card is wide enough to keep it one line (50em and up); the slot takes a drop either way. The verdict is on the first screen at 1280 × 900 and starts within a 360 × 780 one. The digest field sits under both slots, the full width, so neither card has an empty foot: a monospace field that shows all 64 characters at once where the window and the browser allow (where it needs more than the field's three rows and the browser has no `field-sizing`, or more than the window allows, as at 320 × 568 with 32 px text, a valid digest scrolls inside it) and wraps them on a phone (three lines there at least), never taller than ten lines or 70% of the window, whichever is less, so a wrong paste scrolls inside it with its clear control and message on screen, with what it takes said beside its label and a 44 px clear control once it holds anything.
+
+The introduction is one sentence on what a proof shows and one that the file never leaves the browser; how the proof is followed, and what is asked of the server, is said inside "Show the steps".
+
+The verdict is the answer: a status pill with an icon and a word (positive Verified, caution Pending or Not checked, negative for a different file or a proof that does not verify), then the sentence that says it as the page title's size. When a verdict comes, its heading takes focus and it is scrolled into view, or it is said in a live region and nothing moves, by the rule in [`FRONTEND.md`](FRONTEND.md#timestamp-proofs) ("When a verdict may move the reader"). The headline names the block, the proven fact, as a link. Under it, one figure in the summary style: the block's header time with its age in days, readable at a glance; then the one sentence that the time is the miner's claim and what a node checks of it, then the paragraph on what a timestamp does and does not prove, which says "this block" rather than give the height a third time. Every block named under "Also in this proof" that this node has is a link.
+
+The steps are a core drawn down the page: one line from the file's digest at the top to the block's merkle root at the bottom, a small square at each step, larger ones at the two ends. Values are shortened, each kept whole on one line; "Show the values in full" (a toggle button, pressed state) writes every one out in monospace, wrapping, so no value needs a hover or a long press. On a phone each step's operation is its own line and each value its own. The two inputs sit side by side above 40em; stacked on a phone.
 
 ### Ark (not in the prototype)
 

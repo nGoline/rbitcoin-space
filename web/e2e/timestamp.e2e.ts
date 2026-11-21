@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { Page, Request } from "@playwright/test";
 import { axe } from "./axe";
 import { expect, test } from "./fixtures";
+import { smallTargets } from "./targets";
 
 const fixture = (name: string) => new URL(`../../fixtures/ots/${name}`, import.meta.url);
 const BLOCKS = JSON.parse(readFileSync(fixture("blocks.json"), "utf8")) as Record<
@@ -149,6 +150,11 @@ test("a real proof with two Bitcoin attestations verifies by the earlier block, 
     `/block/${BLOCKS["449397"]?.hash}`,
   );
   await expect(verdict.getByText(/Bitcoin block 449\s399: also verified/)).toBeVisible();
+  // The other verified block is a link to its page, by the hash checked against its header.
+  await expect(verdict.getByRole("link", { name: "block 449 399" })).toHaveAttribute(
+    "href",
+    `/block/${BLOCKS["449399"]?.hash}`,
+  );
   // The calendars it once waited on are named, as text, and not checked.
   await expect(verdict.getByText(CALENDAR)).toBeVisible();
   await expect(verdict.getByText("not checked")).toHaveCount(2);
@@ -350,11 +356,13 @@ test("a file the page hashed is said to have existed; the block's time is its he
   await expect(
     verdict.getByRole("heading", { name: "This file existed before block 100" }),
   ).toBeVisible();
-  await expect(verdict.getByText(/header time is 14 Nov 2023, 22:13:20 UTC/)).toBeVisible();
+  // The block's header time as the one figure under the headline.
+  const time = verdict.getByRole("definition").filter({ hasText: "14 Nov 2023" });
+  await expect(time).toContainText("14 Nov 2023, 22:13:20 UTC");
   // The two checks a node makes of a header's time, and nothing said about when it was mined.
   await expect(
     verdict.getByText(
-      /later than the median of the blocks before it, up to eleven, and no more than two hours ahead of the node's own clock when it checks\./,
+      /later than the median of the blocks before, up to eleven, and at most two hours ahead of its own clock\./,
     ),
   ).toBeVisible();
   await expect(verdict.getByText(/ahead of when the block was mined/)).toHaveCount(0);
@@ -400,4 +408,300 @@ test("a pasted digest that is not the proof's is said to differ as a digest, not
   expect(await axe(page), "axe-core, a different digest").toStrictEqual([]);
   expect(w.api().filter((p) => p.includes("/api/"))).toStrictEqual([]);
   w.clean([other]);
+});
+
+// A phone, in CI's wider prose font: the verdict is brought to the reader when it comes, the filled
+// slots are one row each, and a touch screen is not offered a drop (council F-D1).
+test.describe("on a phone", () => {
+  // Firefox has no mobile emulation, only touch: with `isMobile` its viewport never resizes.
+  test.use({
+    prose: "wide",
+    hasTouch: true,
+    ...(process.env["E2E_ENGINE"] === "firefox" ? {} : { isMobile: true }),
+    viewport: { width: 360, height: 780 },
+  });
+  test("the verdict comes into view with focus on its heading, and the digest field shows all of it", async ({
+    page,
+  }) => {
+    await withMainnet(page);
+    const w = watch(page);
+    await page.goto("/regtest/timestamp");
+    await expect(page.getByText("or drop it here").first()).toBeHidden();
+    await proofInput(page).setInputFiles(fileURLToPath(fixture("two-blocks.ots")));
+    // Every character of a digest in sight at once, wrapping, before and while it is typed.
+    await digestBox(page).fill(TWO_BLOCKS);
+    const fits = await digestBox(page).evaluate(
+      (t) => t.scrollWidth <= t.clientWidth && t.scrollHeight <= t.clientHeight + 1,
+    );
+    expect(fits).toBe(true);
+    const heading = page.getByRole("heading", {
+      name: "This digest is committed to by block 449 397",
+    });
+    await expect(heading).toBeAttached();
+    // Typing: the field keeps focus. Enter is done: the verdict is brought into view.
+    await expect(digestBox(page)).toBeFocused();
+    await digestBox(page).press("Enter");
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+    // A slot holding a file is one row: its name, Change and remove on one line.
+    // Both read in one go: the page may still be scrolling to the verdict.
+    const apart = await page.locator(".ots-slot--chosen").evaluate((slot) => {
+      const mid = (sel: string) => {
+        const r = slot.querySelector(sel)?.getBoundingClientRect();
+        return r ? (r.top + r.bottom) / 2 : Number.NaN;
+      };
+      return Math.abs(mid(".ots-slot__title") - mid(".ots-slot__choose"));
+    });
+    expect(apart).toBeLessThan(4);
+    w.clean([TWO_BLOCKS]);
+  });
+
+  test("Done pressed while the block is looked up brings the verdict when it comes", async ({
+    page,
+  }) => {
+    await withMainnet(page);
+    // The block's answer is held until after Enter.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(/\/api\/block-height\/449397$/, async (route) => {
+      await held;
+      await route.fallback();
+    });
+    await page.setViewportSize({ width: 360, height: 560 });
+    await page.goto("/regtest/timestamp");
+    await proofInput(page).setInputFiles(fileURLToPath(fixture("two-blocks.ots")));
+    await digestBox(page).fill(TWO_BLOCKS);
+    await expect(page.getByText("Checking the block")).toBeVisible();
+    await digestBox(page).press("Enter");
+    release();
+    const heading = page.getByRole("heading", {
+      name: "This digest is committed to by block 449 397",
+    });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+  });
+
+  test("a wrong paste of any length keeps the field, its clear and its message on screen", async ({
+    page,
+  }) => {
+    await page.goto("/regtest/timestamp");
+    await digestBox(page).fill("f".repeat(4096));
+    await expect(page.getByText(/is 64 hex digits; this is 4096/)).toBeVisible();
+    await digestBox(page).evaluate((t) => t.scrollIntoView({ block: "start" }));
+    const box = await digestBox(page).boundingBox();
+    expect(box?.height ?? 9999).toBeLessThan(780 / 2);
+    await expect(page.getByRole("button", { name: "Clear the digest" })).toBeInViewport();
+    await expect(page.getByText(/this is 4096/)).toBeInViewport();
+    // A valid digest is shown whole, with nothing to scroll, even at 320 px with 32 px text.
+    await page.setViewportSize({ width: 320, height: 780 });
+    await page.evaluate(() => (document.documentElement.style.fontSize = "32px"));
+    await digestBox(page).fill(TWO_BLOCKS);
+    const whole = await digestBox(page).evaluate(
+      (t) => t.scrollHeight <= t.clientHeight + 1 && t.scrollWidth <= t.clientWidth + 1,
+    );
+    expect(whole).toBe(true);
+  });
+
+  test("a verdict below the screen is scrolled to when it comes", async ({ page }) => {
+    const file = Buffer.from("A file this test wrote and timestamped against a made-up block.\n");
+    const digest = sha256(file);
+    const reached = sha256(Buffer.concat([digest, Buffer.from([1, 2, 3, 4])]));
+    await withMainnet(page, { "100": madeBlock(reached, 1_700_000_000) });
+    // A short screen, so the verdict starts below it.
+    await page.setViewportSize({ width: 360, height: 560 });
+    await page.goto("/regtest/timestamp");
+    await proofInput(page).setInputFiles({
+      name: "made.ots",
+      mimeType: "application/octet-stream",
+      buffer: proof(digest, bitcoin(100)),
+    });
+    await fileInput(page).setInputFiles({ name: "made.txt", mimeType: "text/plain", buffer: file });
+    const heading = page.getByRole("heading", { name: "This file existed before block 100" });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+    expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
+  });
+});
+
+// The slots in every state, at every width and at larger text, in CI's wider prose font: no two
+// of a slot's parts overlap (its label's words, its line's words, Change or Choose, remove), none
+// sticks out of the slot, a name that fits is not cut, a label never shrinks under its own words,
+// and the two slots are one height (council F-D6, N-D5, F-D7, N-D6, N-D7, A-D2).
+test.describe("the slots in every state, width and text size", () => {
+  test.use({ prose: "wide" });
+  const LONG = `${`${"a-very-long-file-name-".repeat(5)}that-goes-on.txt`.slice(0, 116)}.ots`;
+  const SIZES: [number, number][] = [
+    ...[320, 360, 700, 1040, 1280].map((w): [number, number] => [w, 16]),
+    [320, 24],
+    [360, 24],
+    [320, 32],
+    [360, 32],
+    [700, 24],
+    [1280, 24],
+    [1280, 32],
+  ];
+  /** Every fault in the two slots as they are drawn now. */
+  const faults = (page: Page) =>
+    page.evaluate(() => {
+      const out: string[] = [];
+      const words = (el: Element | null) => {
+        if (!el || el.getClientRects().length === 0) return undefined;
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        return r.getBoundingClientRect();
+      };
+      const slots = [...document.querySelectorAll(".ots-slot")];
+      for (const slot of slots) {
+        const box = slot.getBoundingClientRect();
+        const title = slot.querySelector(".ots-slot__title");
+        const shown = (sel: string) => {
+          const el = slot.querySelector(sel);
+          return el && el.getClientRects().length > 0 ? el.getBoundingClientRect() : undefined;
+        };
+        // The label by its words, which overflow a squeezed box; the rest by their boxes.
+        const candidates: [string, DOMRect | undefined][] = [
+          ["label", words(title)],
+          ["hint", shown(".ots-slot__hint")],
+          ["name", shown(".ots-slot__chosen")],
+          ["choose", shown(".ots-slot__choose")],
+          ["remove", shown(".ots-slot__clear")],
+        ];
+        const parts = candidates.filter(
+          (p): p is [string, DOMRect] => p[1] !== undefined && p[1].width > 0,
+        );
+        const name = title?.textContent ?? "";
+        for (const [what, r] of parts)
+          if (r.left < box.left - 0.5 || r.right > box.right + 0.5)
+            out.push(`${name}: ${what} outside its slot`);
+        for (const [i, [a, ra]] of parts.entries())
+          for (const [b, rb] of parts.slice(i + 1))
+            if (
+              ra.left < rb.right - 0.5 &&
+              rb.left < ra.right - 0.5 &&
+              ra.top < rb.bottom - 0.5 &&
+              rb.top < ra.bottom - 0.5
+            )
+              out.push(`${name}: ${a} overlaps ${b}`);
+        if (title && title.scrollWidth > title.clientWidth + 1) out.push(`${name}: label squeezed`);
+        // A control's words stay inside it.
+        for (const c of slot.querySelectorAll<HTMLElement>(".ots-slot__choose, .ots-slot__clear"))
+          if (c.getClientRects().length > 0 && c.scrollWidth > c.clientWidth + 1)
+            out.push(`${name}: "${c.textContent ?? ""}" spills out of its control`);
+        if (title && title.getClientRects().length > 0) {
+          const lh = Number.parseFloat(getComputedStyle(title).lineHeight);
+          if (title.getBoundingClientRect().height > lh * 1.5) out.push(`${name}: label wraps`);
+        }
+        // The size stays on the name's line, and the name is cut only when the two do not fit it
+        // (code review S-4).
+        const n = slot.querySelector<HTMLElement>(".ots-slot__name");
+        const line = slot.querySelector<HTMLElement>(".ots-slot__chosen");
+        const size = line?.querySelector<HTMLElement>(".muted");
+        if (n && line && size) {
+          const [nr, sr] = [n.getBoundingClientRect(), size.getBoundingClientRect()];
+          if (Math.abs(nr.bottom - sr.bottom) > 2) out.push(`${name}: its size is on another line`);
+          const room =
+            line.clientWidth -
+            sr.width -
+            Number.parseFloat(getComputedStyle(line).columnGap || "0");
+          if (n.scrollWidth > n.clientWidth + 1 && n.scrollWidth <= room)
+            out.push(`${name}: "${n.textContent ?? ""}" is cut though it fits`);
+        }
+      }
+      // Side by side, one height; stacked, each as tall as it holds, with no blank to fill.
+      const [a, b] = slots.map((x) => x.getBoundingClientRect());
+      if (a && b && Math.abs(a.top - b.top) < 1 && Math.abs(a.height - b.height) > 1)
+        out.push(`side by side, heights ${a.height} and ${b.height}`);
+      return out;
+    });
+  const sweep = async (page: Page, state: string) => {
+    const found: string[] = [];
+    for (const [width, text] of SIZES) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate((px) => (document.documentElement.style.fontSize = `${px}px`), text);
+      await page.evaluate(() => document.fonts.ready);
+      for (const f of await faults(page))
+        found.push(`${state}, ${width} px, ${text} px text: ${f}`);
+    }
+    await page.evaluate(() => (document.documentElement.style.fontSize = ""));
+    return found;
+  };
+  for (const [label, name] of [
+    ["a short name", "hello-world.txt.ots"],
+    ["a 120-character name", LONG],
+  ] as const) {
+    test(`with ${label}`, async ({ page }) => {
+      expect(name.length).toBe(label === "a short name" ? 19 : 120);
+      await withMainnet(page);
+      await page.goto("/regtest/timestamp");
+      await expect(page.locator(".ots-slot")).toHaveCount(2);
+      const found = await sweep(page, "both empty");
+      await proofInput(page).setInputFiles({
+        name,
+        mimeType: "application/octet-stream",
+        buffer: proof(sha256(Buffer.from("x")), pending(CALENDAR)),
+      });
+      await expect(page.locator(".ots-slot--chosen")).toHaveCount(1);
+      found.push(...(await sweep(page, "proof only")));
+      await digestBox(page).fill(sha256(Buffer.from("x")).toString("hex"));
+      await expect(page.getByText(/stands in for it/)).toBeVisible();
+      found.push(...(await sweep(page, "proof and a digest")));
+      await page
+        .locator("input[type=file]")
+        .nth(1)
+        .setInputFiles({
+          name: name.replace(/\.ots$/, ""),
+          mimeType: "text/plain",
+          buffer: Buffer.from("x"),
+        });
+      await expect(page.locator(".ots-slot--chosen")).toHaveCount(2);
+      found.push(...(await sweep(page, "proof and file")));
+      await page.getByRole("button", { name: "Remove the proof" }).click();
+      await expect(page.locator(".ots-slot--chosen")).toHaveCount(1);
+      found.push(...(await sweep(page, "file only")));
+      expect(found).toStrictEqual([]);
+    });
+  }
+  // Both slots' right-hand controls end the same distance from their cards' edge (council F-D9).
+  test("the empty slot's button ends where the filled slot's remove does", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/regtest/timestamp");
+    await proofInput(page).setInputFiles(fileURLToPath(fixture("two-blocks.ots")));
+    await expect(page.locator(".ots-slot--chosen")).toHaveCount(1);
+    const insets = await page.locator(".ots-slot").evaluateAll((slots) =>
+      slots.map((s) => {
+        const last = [...s.querySelectorAll(".ots-slot__choose, .ots-slot__clear")].map(
+          (e) => e.getBoundingClientRect().right,
+        );
+        return Math.round(s.getBoundingClientRect().right - Math.max(...last));
+      }),
+    );
+    expect(insets[0]).toBe(insets[1]);
+  });
+});
+
+// On a touch screen every control of a filled slot and the digest's clear is a thumb's target
+// (council F-D8): the empty page in targets.e2e.ts has none of them.
+test.describe("the slots' controls on a touch screen", () => {
+  test.use({
+    hasTouch: true,
+    ...(process.env["E2E_ENGINE"] === "firefox" ? {} : { isMobile: true }),
+    viewport: { width: 360, height: 780 },
+  });
+  test("are each a thumb's target", async ({ page }) => {
+    await page.goto("/regtest/timestamp");
+    await proofInput(page).setInputFiles(fileURLToPath(fixture("two-blocks.ots")));
+    await digestBox(page).fill("ab");
+    await expect(page.getByRole("button", { name: "Clear the digest" })).toBeVisible();
+    const faults = await smallTargets(page, "main");
+    await fileInput(page).setInputFiles({
+      name: "f.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("f"),
+    });
+    await expect(page.getByRole("button", { name: "Remove the file" })).toBeVisible();
+    faults.push(...(await smallTargets(page, "main")));
+    expect(faults).toStrictEqual([]);
+  });
 });
