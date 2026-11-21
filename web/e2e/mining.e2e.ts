@@ -1,5 +1,6 @@
+import type { Page } from "@playwright/test";
 import { chain, expect, stubRetargets, test } from "./fixtures";
-import { tapRow } from "./rows";
+import { tablesSettled, tapRow } from "./rows";
 
 // The scenario's blocks are stamped from 2026-01-01, ten minutes apart, by no pool on the list.
 
@@ -36,20 +37,269 @@ test("regtest's mining page says what is and is not meaningful there", async ({ 
   await expect(unknown).toContainText("100.0%");
 });
 
-test("regtest's mining page fits a phone without scrolling sideways", async ({ page }) => {
-  // Regtest's difficulty, 0.00000000046565 written out, ran 10 to 19 px past a phone's width.
-  for (const width of [320, 360]) {
-    await page.setViewportSize({ width, height: 700 });
-    // All of history, so every section holds figures.
-    await page.goto("/regtest/mining?period=all");
-    await expect(page.getByText(/^4\.66\s×\s10⁻¹⁰$/).first()).toBeVisible();
-    await expect(page.getByRole("table", { name: /Pools ranked by blocks found/ })).toBeVisible({
-      timeout: 30_000,
+// Layout at a phone's width in the widest prose face CI may draw (docs/FRONTEND.md).
+test.describe("in a wide prose font", () => {
+  test.use({ prose: "wide" });
+
+  test("regtest's mining page fits a phone without scrolling sideways, every pool named whole", async ({
+    page,
+  }) => {
+    // Regtest's difficulty, 0.00000000046565 written out, ran 10 to 19 px past a phone's width.
+    for (const width of [320, 360]) {
+      await page.setViewportSize({ width, height: 700 });
+      // All of history, so every section holds figures.
+      await page.goto("/regtest/mining?period=all");
+      await expect(page.getByText(/^4\.66\s×\s10⁻¹⁰$/).first()).toBeVisible();
+      const table = page.getByRole("table", { name: /Pools ranked by blocks found/ });
+      await expect(table).toBeVisible({ timeout: 30_000 });
+      await wideFaceDrawn(page);
+      const scrolled = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(scrolled, `page width at ${width} px`).toBeLessThanOrEqual(width);
+      // Unknown's "98 empty" once kept its width and cut the name beside it to under a pixel.
+      const names = table.locator(".mining-pool__name");
+      // With no name found the check below would pass having checked nothing.
+      await expect(names.first()).toBeVisible();
+      // A cut name is clipped to one line, so its overflow is down as well as across. One pixel of
+      // slack: each size is rounded to a whole pixel.
+      const cut = await names.evaluateAll((all) =>
+        all
+          .filter((n) => n.scrollWidth > n.clientWidth + 1 || n.scrollHeight > n.clientHeight + 1)
+          .map((n) => n.textContent),
+      );
+      expect(cut, `pool names cut at ${width} px`).toEqual([]);
+    }
+  });
+
+  // Regtest's own "98 empty", and counts as large as mainnet's all-time ones from a routed answer.
+  // Under its name the note once ran on past its column and over the Share figure beside it. Last,
+  // the counts drawn larger than the text round them, as a browser's minimum font size draws them
+  // without changing what an em is: a column sized in em was then narrower than its count.
+  const sizes = [
+    { text: 16, width: 320 },
+    { text: 16, width: 360 },
+    { text: 24, width: 320 },
+    { text: 24, width: 360 },
+    { text: 16, width: 320, drawn: "28px" },
+  ];
+  for (const counts of ["regtest's", "large"] as const) {
+    test(`each pool's empty count stays whole in its own cell, ${counts}, at 16 and 24 px text and drawn larger`, async ({
+      page,
+      browserName,
+    }) => {
+      test.skip(
+        browserName !== "chromium",
+        "only Chromium lets a test set the browser's text size",
+      );
+      if (counts === "large") await routeLargeCounts(page);
+      const cdp = await page.context().newCDPSession(page);
+      const faults: string[] = [];
+      for (const { text, width, drawn } of sizes) {
+        await cdp.send("Page.setFontSizes", {
+          fontSizes: { standard: text, fixed: Math.round((text * 13) / 16) },
+        });
+        await page.setViewportSize({ width, height: 900 });
+        await page.goto("/regtest/mining?period=all");
+        const notes = page.locator(".mining-pool__empty");
+        // Regtest's answer in place of the routed one would pass having drawn no large count.
+        await expect(notes).toHaveText(
+          counts === "large"
+            ? [/^52\s560\sempty$/, /^12\s345\sempty$/, /^98\sempty$/]
+            : [/^98\sempty$/],
+          { timeout: 30_000 },
+        );
+        // Hidden notes match their text and give no boxes, so every check below would pass on none.
+        for (const note of await notes.all()) await expect(note).toBeVisible();
+        await wideFaceDrawn(page);
+        if (drawn !== undefined) {
+          await notes.evaluateAll((all, size) => {
+            for (const n of all) {
+              (n.querySelector(".mining-pool__count") as HTMLElement).style.fontSize = size;
+            }
+          }, drawn);
+        }
+        // The table drops its columns in the frames after a resize: measure what it settles on.
+        await tablesSettled(page);
+        const found = await notes.evaluateAll((all) => {
+          // The table scrolls inside its own panel: without it the page is no narrower.
+          const pageWidth = () => document.documentElement.scrollWidth;
+          const panel = all[0]?.closest<HTMLElement>(".table-scroll");
+          const withTable = pageWidth();
+          if (panel) panel.style.display = "none";
+          const without = pageWidth();
+          if (panel) panel.style.display = "";
+          const wide =
+            withTable > without
+              ? [`the table widens the page from ${without} to ${withTable} px`]
+              : [];
+          return [
+            ...wide,
+            ...all.flatMap((note) => {
+              const cell = note.closest("td") as HTMLTableCellElement;
+              const share = cell.nextElementSibling as HTMLElement;
+              const edge =
+                cell.getBoundingClientRect().right -
+                Number.parseFloat(getComputedStyle(cell).paddingRight);
+              const box = note.getBoundingClientRect();
+              const textOf = (el: Element) => {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                return range;
+              };
+              const count = textOf(note.querySelector(".mining-pool__count") as Element);
+              const figure = count.getBoundingClientRect();
+              const shareText = textOf(share).getBoundingClientRect();
+              const what = `"${note.textContent?.trim() ?? ""}"`;
+              return [
+                // One line, drawn: no rectangle at all is a count not drawn, two a count broken.
+                ...(count.getClientRects().length !== 1 || figure.width <= 0
+                  ? [`${what}: its count is drawn as ${count.getClientRects().length} lines`]
+                  : []),
+                // Half a pixel of slack for rounding.
+                ...(box.right > edge + 0.5 || figure.right > edge + 0.5
+                  ? [
+                      `${what} runs ${(Math.max(box.right, figure.right) - edge).toFixed(1)} px past its cell`,
+                    ]
+                  : []),
+                ...(box.right > shareText.left &&
+                box.left < shareText.right &&
+                box.bottom > shareText.top &&
+                box.top < shareText.bottom
+                  ? [`${what} covers the share "${share.textContent ?? ""}"`]
+                  : []),
+              ];
+            }),
+          ];
+        });
+        const at = `${width} px, ${text} px text${drawn === undefined ? "" : `, counts drawn at ${drawn}`}`;
+        faults.push(...found.map((f) => `${at}: ${f}`));
+      }
+      expect(faults).toStrictEqual([]);
     });
-    const scrolled = await page.evaluate(() => document.documentElement.scrollWidth);
-    expect(scrolled, `page width at ${width} px`).toBeLessThanOrEqual(width);
   }
+
+  // A cut name once broke at its first space and left its line half empty: "SBI Crypto" read
+  // "SBI…", and "BTC Guild" and "BTC Nuggets" read the same. Names from the pool list, and six-digit
+  // block counts and match rates as mainnet's all of history has. The names are drawn at 20 px as
+  // well, larger than the em the column's floor is measured in, as a browser's minimum font size
+  // draws them: "BTC Guild" is cut only then.
+  test("a cut pool name fills its line, whatever spaces it has", async ({ page }) => {
+    const names = ["SBI Crypto", "BTC Guild", "BTC Nuggets", "ST Mining Corp", "AntPool"];
+    const pools = names.map((name, i) => ({
+      poolId: i + 1,
+      name,
+      link: "",
+      blockCount: 190_000 - i * 10_000,
+      rank: i + 1,
+      emptyBlocks: 0,
+      slug: name.toLowerCase().replaceAll(" ", ""),
+      avgMatchRate: 99.6 - i * 0.7,
+      avgFeeDelta: null,
+      poolUniqueId: i + 1,
+    }));
+    await page.route(/\/api\/v1\/mining\/pools\/all$/, (route) =>
+      route.fulfill({
+        json: {
+          pools,
+          blockCount: 900_000,
+          lastEstimatedHashrate: 1e18,
+          lastEstimatedHashrate1w: 1e18,
+        },
+      }),
+    );
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto("/regtest/mining?period=all");
+    const shown = page.locator(".mining-pool__name");
+    await expect(shown).toHaveText(names, { timeout: 30_000 });
+    await wideFaceDrawn(page);
+    await shown.evaluateAll((all) => {
+      for (const el of all) el.style.fontSize = "17px";
+    });
+    await tablesSettled(page);
+    // What each name shows: the characters on its first line, and how wide they are drawn.
+    const drawn = await shown.evaluateAll((all) =>
+      all.map((el) => {
+        const node = el.firstChild as Text;
+        const name = node.data;
+        const box = (from: number, to: number) => {
+          const range = document.createRange();
+          range.setStart(node, from);
+          range.setEnd(node, to);
+          return range.getBoundingClientRect();
+        };
+        const top = box(0, 1).top;
+        let line = 1;
+        while (line < name.length && Math.abs(box(line, line + 1).top - top) < 1) line += 1;
+        return {
+          name,
+          cut: el.scrollHeight > el.clientHeight + 1,
+          shows: name.slice(0, line),
+          width: box(0, line).width,
+          next: line < name.length ? box(line, line + 1).width : 0,
+          room: el.clientWidth,
+        };
+      }),
+    );
+    const cut = drawn.filter((d) => d.cut);
+    // Neither "BTC" pool fits here: with none cut the checks would pass having tested nothing.
+    expect(
+      cut.map((d) => d.name),
+      "the names cut at 320 px",
+    ).toEqual(expect.arrayContaining(["SBI Crypto", "BTC Guild", "BTC Nuggets"]));
+    // Filled: the line ends where the next character would not fit, not at a space short of it.
+    for (const d of cut) {
+      expect(d.room - d.width, `"${d.name}" shows "${d.shows}" in ${d.room} px`).toBeLessThan(
+        d.next + 0.5,
+      );
+    }
+    // The ellipsis is painted over the end of the line, which a range cannot see: the two must
+    // still differ with the last character taken away.
+    const btc = drawn.filter((d) => d.name.startsWith("BTC ")).map((d) => d.shows.slice(0, -1));
+    expect(new Set(btc).size, `the two BTC pools show ${JSON.stringify(btc)}`).toBe(2);
+  });
 });
+
+/** Waits until the wide stand-in face draws the page: it loads on its own time. */
+async function wideFaceDrawn(page: Page) {
+  const loaded = await page.evaluate(async () => {
+    await document.fonts.ready;
+    return [...document.fonts].some(
+      (f) => f.family.includes("Prose stand-in") && f.status === "loaded",
+    );
+  });
+  expect(loaded, "the wide stand-in face drew the page").toBe(true);
+}
+
+/** All of history as a busy network's, three pools with empty counts of five, five and two digits. */
+async function routeLargeCounts(page: Page) {
+  const pools = (
+    [
+      ["Foundry USA", 60_000, 52_560],
+      ["Unknown", 30_000, 12_345],
+      ["AntPool", 9_000, 98],
+    ] as const
+  ).map(([name, blockCount, emptyBlocks], i) => ({
+    poolId: i + 1,
+    name,
+    link: "",
+    blockCount,
+    rank: i + 1,
+    emptyBlocks,
+    slug: name.toLowerCase().replaceAll(" ", ""),
+    avgMatchRate: null,
+    avgFeeDelta: null,
+    poolUniqueId: i + 1,
+  }));
+  await page.route(/\/api\/v1\/mining\/pools\/all$/, (route) =>
+    route.fulfill({
+      json: {
+        pools,
+        blockCount: 99_000,
+        lastEstimatedHashrate: 1e18,
+        lastEstimatedHashrate1w: 1e18,
+      },
+    }),
+  );
+}
 
 test("a chart draws and its readout shows the route's figure", async ({ page }) => {
   const route = "/regtest/api/v1/mining/blocks/fees/all";

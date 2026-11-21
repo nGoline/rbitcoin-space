@@ -493,12 +493,17 @@ function Pools(props: {
                         class={`mining-pool__swatch mining-period-shares__part mining-period-shares__part--${swatch(p)}`}
                         aria-hidden="true"
                       />
-                      <Link class="mining-pool__name" href={paths.pool(p.slug)}>
-                        {p.name}
-                      </Link>
-                      <Show when={p.emptyBlocks > 0}>
-                        <span class="mining-pool__empty">{groupDigits(p.emptyBlocks)} empty</span>
-                      </Show>
+                      <span class="mining-pool__text">
+                        <Link class="mining-pool__name" href={paths.pool(p.slug)}>
+                          {p.name}
+                        </Link>
+                        <Show when={p.emptyBlocks > 0}>
+                          <span class="mining-pool__empty">
+                            <span class="mining-pool__count">{groupDigits(p.emptyBlocks)}</span>{" "}
+                            <span class="mining-pool__word">empty</span>
+                          </span>
+                        </Show>
+                      </span>
                     </span>
                   ),
                 },
