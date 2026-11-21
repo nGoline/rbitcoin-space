@@ -599,22 +599,26 @@ Decided while building it:
 
 ```text
 Fee track record                                          [24 h | 1 w | 1 m | All]
-How this server's fee recommendations, the numbers behind the home page's fees, fared…
-┌ Mined in time ───────────────────────────────────────────────────────────────┐
-│ No rush       67.4%                       85%                                 │
-│ within a day  mined within the next 144   [·······▐█▌·······┊····]  × Below target │
-│               95% interval 63.3–71.5%. Under 85% across its whole interval.  │
-│ Low …                                                         ✓ Meets target │
-└──────────────────────────────────────────────────────────────────────────────┘
-What it cost              (table: overpaid when met, mean and median; short when missed)
-What the figures rest on  (table: answers judged, blocks, left out and why; samples not ours)
+How often this server's recommended fees … were mined in time, against an 85% target.
+┌ Mined in time ──────────────────────────────────────── ┊ 85% target ▬ 95% interval ┐
+│ No rush       75.2%                       0% [·····▐█▌··┊····] 100%  × Below target │
+│ within a day  mined within the next 144                71.6–78.8%                  │
+│ Low …                                                              ✓ Meets target │
+│ These figures cover 14 Nov 2026, 13:16 to 21 Nov 2026, 13:16 UTC.                 │
+└───────────────────────────────────────────────────────────────────────────────────┘
+┌ What it cost ───────────────────────┐ ┌ What the figures rest on ─────────────────┐
+│ level, recommended (median), over-  │ │ level, answers judged, blocks, left out    │
+│ paid (mean · median), short (mean)  │ │ (total, each kind not zero named under it) │
+└─────────────────────────────────────┘ └────────────────────────────────────────────┘
 > How the score is kept
 ```
 
-- **The evidence is the page.** It exists so a reader can check the home page's numbers, misses included: a level under its target says "Below target" in the negative colour with a cross, never softened; one at or over it "Meets target" in the positive colour with a tick. Too few blocks is muted, with a dashed circle and no figure.
-- **One drawing, the meter:** 0 to 100% on a sunken track, the 95% interval a band in `--color-line-strong`, the share a mark in the verdict's colour, and the target a dashed line in the text colour with its figure above it. It repeats the figures beside it, so it is hidden from screen readers. A level without a share keeps the track, dashed, with only the target.
-- **Rows, not cards:** the four levels are rows of one panel, slowest first as the home panel lists them. On a desktop the name, the share, the meter and the verdict are one line with the detail under them; narrower, the name and verdict lead and the meter takes the full width.
-- **Plain words beside the tables:** one sentence each says what overpaid and short mean, and why answers were left out; the method is behind "How the score is kept".
+- **The evidence is the page.** It exists so a reader can check the home page's numbers, misses included: on mainnet a level under its target says "Below target" in the negative colour with a cross, never softened; one at or over it "Meets target" in the positive colour with a tick. Too few blocks is muted, with a dashed circle and no figure.
+- **A test network is not a fair test.** Its blocks have room, and against a block with room an answer at the minimum reads as a miss, so there a share under the target says "Not a fair test here", muted with the dashed circle, the share mark in the text colour; the share, its interval and every table figure stay. One note under the rows, in the panel of the verdicts, says why. Red is kept for a real miss.
+- **One drawing, the meter:** 0 to 100% on a sunken track, the 95% interval a band in `--color-line-strong` with its two ends written under it (the label centred on the band and slid to stay inside the line, so the resolution a 0 to 100 scale hides is readable), the share a mark in the verdict's colour, and the target a dashed line in the text colour from just above the track to its lower edge, so it never reaches the written interval under it. A key beside the panel's title names the dashed line and the band once, each swatch kept on the line of its words. It repeats the figures beside it, so it is hidden from screen readers. A level without a share keeps the track, dashed, with only the target.
+- **Rows, not cards:** the four levels are rows of one panel, slowest first as the home panel lists them. On a desktop the name, the share, the meter and the verdict are one line. On a phone each level is two lines and its meter: the name over its window at the left, the share over its verdict at the right, then the line with the interval's ends beside it (the key says the lines run 0 to 100%), so the four levels are on a 360 × 780 first screen. Every row's line starts and ends at the same x at every width, whatever the row holds (a share or none, a short or a wide interval): the column before it is fixed, and the interval's ends have one reserved width, the widest they can be, so the target is one vertical line down the panel. The sentence on how sure a verdict is is read aloud always and shown only when it adds to the drawing: the interval reaches across the target, or there is no share yet. The counts behind each level are in the last table only.
+- **Two tables side by side,** each in its own panel, wherever both hold their columns whole (`30rem` each, so larger text stacks them): what it cost and what the figures rest on. "Overpaid" is read against the median rate the level recommended, in the first figure column, since 1 sat/vB overpaid is double at the minimum and nothing at 50. Its mean and median share a column, side by side on a wide screen and on a phone one above the other in every row, so the medians are always the second line. What was left out is one column, its total and each kind that is not zero named under it, so no kind is dropped at any width. One sentence under each table; the definitions of the kinds left out, and the method, are behind "How the score is kept". Where a table does not fit its panel (a phone at large text, or signet's costs at 320 px), it is not scrolled: each level becomes a labelled group, its name over its figures, each figure beside its column's words. Whether it fits is measured, not guessed from the width, so it holds at any text size and in any font. Every layout of the rows follows one ruler, the levels' panel's width in its own text, so the rows hold at any text size, set by the page or by the browser, and no two layouts mix. Past 63em, where the desktop's four columns still leave the line a third of its row in a wide font too, a level is one row of four columns (about 1150 px and wider at default text; at exactly 63em it is still the layout below); from 35em it is its name and verdict, then its share beside its line, as on a tablet (from 640 px at default text, 960 px at 24 px, 1280 px at 32 px); under 35em it is a phone's, the share over its verdict and the line under both; and under 12em (under 390 px at 24 px text, 520 px at 32 px) each level's name, share, verdict and line stack in one column, so none of them wraps apart, the line the panel's full width with the interval's ends under it. Every line has a real width at every size, at least a third of its row.
+- **The periods** sit at the right of the title where they fit, and wrapped under it they start at its left edge. Where the header is under 14em of its own text (a phone at 24 px text and larger) this page's four periods are a little narrower, each still a thumb's width, so all four show with no fade over the last; at 32 px they wrap rather than scroll. The shared `Periods` component is unchanged.
 
 ### Lightning (not in the prototype)
 
