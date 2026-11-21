@@ -30,7 +30,7 @@ import { AddingUp, KeptAddress } from "./Kept";
 import { readAt } from "./asof";
 import { createLookalikes } from "./LookalikeNotice";
 import { Notice, settled } from "./parts";
-import { AsOfForm, PinnedBody } from "./Pinned";
+import { AsOfPicker, ClockIcon, PinnedBody } from "./Pinned";
 import { SilentPaymentAddress } from "./SilentPayment";
 import { Totals } from "./Totals";
 import "./AddressPage.css";
@@ -87,9 +87,6 @@ export default function AddressPage() {
     const k = key();
     return k !== undefined && at().kind !== "now" ? `${k} ${search.at ?? ""}` : undefined;
   };
-  // The block field, opened from the header while the page is live.
-  const [picking, setPicking] = createSignal(false);
-  const canPin = () => key() !== undefined && found()?.type !== "sp" && at().kind === "now";
   usePageTitle(
     () => `${isKey() ? "Public key" : "Address"} ${truncateMiddle(found()?.address ?? input())}`,
   );
@@ -106,21 +103,6 @@ export default function AddressPage() {
               </span>
             )}
           </Show>
-          <Show when={canPin()}>
-            <button
-              class="btn address-asof-open"
-              type="button"
-              aria-expanded={picking() ? "true" : "false"}
-              aria-controls="address-asof-pick"
-              onClick={() => setPicking((p) => !p)}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle cx="8" cy="8" r="6.25" />
-                <path d="M8 4.5V8l2.5 1.5" />
-              </svg>
-              As of a block
-            </button>
-          </Show>
         </div>
         <Show when={found()} fallback={<p class="address-head__raw">{input()}</p>}>
           {(f) => (
@@ -131,17 +113,6 @@ export default function AddressPage() {
               </Show>
             </HashFull>
           )}
-        </Show>
-        <Show when={canPin()}>
-          <div id="address-asof-pick" class="address-asof-pick" hidden={!picking()}>
-            <Show when={picking()}>
-              <p class="address-asof-pick__lead">
-                See this {isKey() ? "key" : "address"} as it stood at a past block: its balance,
-                coins and history then.
-              </p>
-              <AsOfForm id="address-asof-at-now" page={key() ?? ""} />
-            </Show>
-          </div>
         </Show>
       </header>
       <Switch>
@@ -161,18 +132,24 @@ export default function AddressPage() {
               address={k.split(" ")[1] ?? ""}
               isKey={found()?.type === "p2pk"}
               at={untrack(at)}
+              page={k.split(" ").slice(0, 2).join(" ")}
             />
           )}
         </Match>
         <Match when={key()} keyed>
-          {(k) => <AddressBody address={k.slice(k.indexOf(" ") + 1)} found={found()} />}
+          {(k) => <AddressBody address={k.slice(k.indexOf(" ") + 1)} found={found()} page={k} />}
         </Match>
       </Switch>
     </div>
   );
 }
 
-function AddressBody(props: { address: string; found: Recognised | null }) {
+function AddressBody(props: {
+  address: string;
+  found: Recognised | null;
+  /** This page's settled key (the keyed match's): network and normalised address. */
+  page: string;
+}) {
   const network = useNetwork();
   // The page is made afresh for each address (AddressPage keys it).
   const address = untrack(() => props.address);
@@ -345,12 +322,34 @@ function AddressBody(props: { address: string; found: Recognised | null }) {
     resync: () => undefined,
   });
 
+  // Whether the page is live, and the way to see it as of a past block, on one row: made once,
+  // above the switch, so a page that turns out kept does not make its button a second time.
+  const status = () => (
+    <div class="address-status">
+      <LiveLine watch={watch()} socket={socket()} />
+      <AsOfPicker
+        id="address-asof-pick"
+        page={untrack(() => props.page)}
+        title={`This ${props.found?.type === "p2pk" ? "key" : "address"} at a past block`}
+        class="address-asof-open"
+        arrival
+        label={
+          <>
+            <ClockIcon />
+            As of a block
+          </>
+        }
+      />
+    </div>
+  );
+
   return (
     <>
       {/* Present from the start, so the one announcement it makes is heard. */}
       <p class="visually-hidden address-announce" aria-live="polite">
         {announced()}
       </p>
+      <Show when={pageRefusal() === undefined && !large()}>{status()}</Show>
       <Switch>
         <Match when={pageRefusal() === "no-index"}>
           <Notice title="This server does not index addresses" tone="caution">
@@ -374,7 +373,6 @@ function AddressBody(props: { address: string; found: Recognised | null }) {
         <Match when={kept()}>
           {(k) => (
             <>
-              <LiveLine watch={watch()} socket={socket()} />
               {notice()}
               <KeptAddress
                 address={props.address}
@@ -412,7 +410,6 @@ function AddressBody(props: { address: string; found: Recognised | null }) {
           />
         </Match>
         <Match when={true}>
-          <LiveLine watch={watch()} socket={socket()} />
           <Show when={busyRetrying()}>
             <p class="address-busy" role="status">
               The server is busy for a moment, so this page is waiting to ask again.
