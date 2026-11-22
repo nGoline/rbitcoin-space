@@ -505,18 +505,6 @@ pub struct BlockSummaryComputed {
 }
 event!(BlockSummaryComputed, "block_summary_computed", Debug);
 
-/// Which source lists a network's blocks for the summaries, the audit and the backfill: at
-/// startup and on every reconnect, and when a block's answer changes it.
-#[derive(Debug, Serialize)]
-pub struct BlockTxsSource {
-    pub network: &'static str,
-    /// `summary_route` or `getblock`.
-    pub source: &'static str,
-    /// `probe`, `answered` or `refused`.
-    pub reason: &'static str,
-}
-event!(BlockTxsSource, "block_txs_source", Info);
-
 /// The summary route failed for a block, which `getblock` listed instead. At a total of 1, 2, 4,
 /// 8… per network.
 #[derive(Debug, Serialize)]
@@ -793,7 +781,8 @@ pub struct LedgerSeeded {
     pub scripthash: String,
     /// The block its totals are exact at.
     pub height: u32,
-    /// Whether the node's newest history page was kept too.
+    /// Whether the node's newest history page was settled with the seed: kept too, or refused by
+    /// the node for size (nothing kept).
     pub page: bool,
     /// Addresses dropped to make room.
     pub evicted: usize,
@@ -802,15 +791,6 @@ pub struct LedgerSeeded {
     pub duration_ms: f64,
 }
 event!(LedgerSeeded, "ledger_seeded", Info);
-
-/// Whether the node's Esplora socket adds up totals above its `--max-sh-creates`, so seeds of
-/// addresses above the cap ask it: at startup and on every reconnect, on a socket only.
-#[derive(Debug, Serialize)]
-pub struct LedgerTotalsRoute {
-    pub network: &'static str,
-    pub uncapped: bool,
-}
-event!(LedgerTotalsRoute, "ledger_totals_route", Info);
 
 /// The node refused to add an address up: its `--max-sh-creates` is in force. Said once until a
 /// seed works again.
@@ -841,8 +821,8 @@ pub struct LedgerFilled {
     pub scripthash: String,
     /// The seed block the page was pinned to.
     pub height: u32,
-    /// `joined`, `full` (the window holds rows since the seed only) or `gap` (rows since the seed
-    /// may be missing).
+    /// `joined`, `refused` (the node refused the page for size), `full` (the window holds rows
+    /// since the seed only) or `gap` (rows since the seed may be missing).
     pub outcome: &'static str,
     /// Rows the page added to the window.
     pub rows: usize,
@@ -2012,11 +1992,6 @@ mod tests {
                 cause: "request",
                 source: "getblock",
             }),
-            both(&BlockTxsSource {
-                network: n,
-                source: "summary_route",
-                reason: "probe",
-            }),
             both(&BlockTxsFellBack {
                 network: n,
                 reason: "not_found",
@@ -2148,10 +2123,6 @@ mod tests {
                 evicted: 0,
                 via: "reader",
                 duration_ms: 8000.0,
-            }),
-            both(&LedgerTotalsRoute {
-                network: n,
-                uncapped: true,
             }),
             both(&LedgerSeedRefused {
                 network: n,

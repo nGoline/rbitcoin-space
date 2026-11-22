@@ -66,8 +66,12 @@ impl Source for Counted {
             })
         })
     }
-    async fn page(&self, _: &Script, _: BlockHash) -> Result<Vec<TxSummary>, SourceError> {
-        Ok(Vec::new())
+    async fn page(
+        &self,
+        _: &Script,
+        _: BlockHash,
+    ) -> Result<Result<Vec<TxSummary>, Option<ScriptSize>>, SourceError> {
+        Ok(Ok(Vec::new()))
     }
     async fn history(
         &self,
@@ -101,7 +105,6 @@ async fn main() {
         .unwrap(),
         esplora: Esplora::new("http://127.0.0.1:1").unwrap(),
         electrum: var(&net, "ELECTRUM_ADDR"),
-        uncapped: Default::default(),
     });
     let dir = std::env::temp_dir().join(format!("history_list_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -117,7 +120,8 @@ async fn main() {
         let started = Instant::now();
         let r = ledger::history(&store, &node, sh, i64::MAX as u64, i64::MAX as u64, 0).await;
         println!(
-            "{sh}: counted and seeded ({seeded:?}) in {seed_s:.1} s; history {r:?} in {:.1} s",
+            "{}: counted and seeded ({seeded:?}) in {seed_s:.1} s; history {r:?} in {:.1} s",
+            sh.digest_hex(),
             started.elapsed().as_secs_f64()
         );
     }

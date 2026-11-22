@@ -1,4 +1,4 @@
-//! Esplora REST client for rbitcoin v0.9.2.
+//! Esplora REST client for rbitcoin (`nightly-20261122` or later, docs/RBITCOIN.md).
 //!
 //! Every call names a [`Route`], which can only be built from parsed values. Two ways to call:
 //!
@@ -283,7 +283,7 @@ impl Esplora {
     }
 
     /// Every transaction's txid, fee, weight and output value, coinbase first: rbitcoin's
-    /// `/block/:hash/txs/summary`, newer than v0.9.2. v0.9.2 answers `Rejected` (400); an unknown,
+    /// `/block/:hash/txs/summary`. A node without the route answers `Rejected` (400); an unknown,
     /// off-best-chain or pruned block is `NotFound`. An answer over [`MAX_SUMMARY_BYTES`] is
     /// `ResponseTooBig`, refused while reading, and one over [`MAX_BLOCK_TXS`] rows a `Decode`
     /// error.

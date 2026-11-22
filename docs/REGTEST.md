@@ -1,6 +1,6 @@
 # Regtest harness
 
-A private rbitcoin v0.9.2 node on regtest, in Docker, for every test that writes: mining, broadcasting, replacing. The shared nodes are read-only ([`AGENTS.md`](../AGENTS.md)).
+A private rbitcoin node on regtest, the build the explorer requires ([`RBITCOIN.md`](RBITCOIN.md)), in Docker, for every test that writes: mining, broadcasting, replacing. The shared nodes are read-only ([`AGENTS.md`](../AGENTS.md)).
 
 It needs Docker with Compose v2.23 or later, and `python3`. Nothing else: the script uses only the Python standard library.
 
@@ -50,7 +50,7 @@ The credentials are throwaway and fixed in [`dev/regtest/compose.yml`](../dev/re
 
 | Setting | Value |
 |---|---|
-| Image | `ghcr.io/rbitcoin-org/rbitcoin:0.9.2`, pinned by digest. Published by rbitcoin's release workflow for linux/amd64 and linux/arm64; its revision label is the `v0.9.2` tag commit |
+| Image | `ghcr.io/rbitcoin-org/rbitcoin:nightly-20261122`, pinned by digest (`sha256:1a7208ea…5d34d7a`). Published by rbitcoin's nightly workflow for linux/amd64 and linux/arm64; its revision label is commit `e0b2c688487b7699c9d64bcf678b308cf34978b7`. The pin moves to rbitcoin's next release |
 | Interfaces | JSON-RPC (`--rpc-listen`), Electrum (`--electrum-listen`), Esplora (`--esplora-listen`), all over TCP |
 | Address index | On (`--sh-index`) |
 | Peers | None: `--no-seeds --no-listen` |
@@ -59,7 +59,7 @@ The credentials are throwaway and fixed in [`dev/regtest/compose.yml`](../dev/re
 
 The image is `FROM scratch` with only `rbitcoin-node` and `rbitcoin-cli`: there is no shell in the container. The CLI works through Compose: `REGTEST_PROJECT=<name> docker compose -f dev/regtest/compose.yml exec node rbitcoin-cli --network regtest getblockcount`.
 
-Set `REGTEST_IMAGE` to use another image, for example one built locally from the `v0.9.2` tag with rbitcoin's `Dockerfile`.
+`REGTEST_IMAGE` overrides the pin, for example with an image built locally with rbitcoin's `Dockerfile`; only the pinned image is tested. A node older than `nightly-20261122` fails `ledger::tests::regtest::a_script_asked_by_hash_answers_as_its_address`.
 
 ## Running several at once
 
@@ -154,6 +154,6 @@ Measured 2026-11-11 with the v0.9.1 image, on an Apple Silicon Mac (Docker in a 
 The browser tests' `e2e` job runs this harness through [`web/scripts/e2e.sh`](../web/scripts/e2e.sh) ([`CI.md`](CI.md#how-it-stays-fast)):
 
 - **Through Compose and `regtest.py`, not a GitHub service container.** A service container cannot pass arguments to the image's entrypoint, and this node needs its flags. Services also start before checkout, so `compose.yml` would not exist yet.
-- **The image is pulled, not cached.** It is 10 MB, pinned by digest, and served from ghcr.io next to GitHub's runners; restoring a cached `docker save` would cost about as much as the pull.
+- **The image is pulled, not cached.** It is 11 MB compressed (`nightly-20261122`, linux/amd64; v0.9.2's was 10.4 MB), pinned by digest, and served from ghcr.io next to GitHub's runners; restoring a cached `docker save` would cost about as much as the pull.
 - **In parallel with the build.** The script starts `scenario` in the background, builds the server and frontend, then waits for it and `eval`s the output of `env`, so the node is off the critical path.
 - **One instance per run,** named `e2e-` and the script's process id with `REGTEST_PROJECT`, so runs on one machine never share a node. Tests that change the chain are the `*.mine.e2e.ts` files: they mine and pay through the node's RPC with helpers in [`web/e2e/regtest.ts`](../web/e2e/regtest.ts) that build transactions the harness's way, the hostile test runs `hostile` and the Stratum V2 test `tagged`.

@@ -372,7 +372,6 @@ impl App {
                     report::report_electrum(network, &ctx.electrum);
                     lightning::spawn(&ctx);
                     peers.extend(ctx.lightning.clone());
-                    tokio::spawn(summary::detect_routes(Arc::clone(&ctx)));
                     tokio::spawn(health::watch_address_index(Arc::clone(&ctx)));
                     routes
                         .clone()

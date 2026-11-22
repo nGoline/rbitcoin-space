@@ -1277,7 +1277,7 @@ async fn history(
     esplora: &Esplora,
     sh: ScriptHash,
 ) -> Option<Vec<(Txid, bool, Value)>> {
-    let script = sh.to_string().parse().ok()?;
+    let script = node::esplora::ScriptHash::from_electrum(sh);
     let first = Some((None, None));
     let verdicts = &ctx.api.verdicts;
     if verdicts
@@ -1298,6 +1298,18 @@ async fn history(
     }
     let raw = raw.ok()?;
     if !raw.status.is_success() {
+        // Refused for size, as the HTTP routes learn it: the size is known and not asked again.
+        if node::esplora::Error::from_status(raw.status, &raw.body)
+            == node::esplora::Error::TooLarge
+        {
+            let size = node::esplora::ScriptSize::from_refusal(&raw.body);
+            verdicts.learn(
+                script,
+                None,
+                Verdict::TooLarge(size),
+                std::time::Instant::now(),
+            );
+        }
         return None;
     }
     let list: Vec<Value> = serde_json::from_slice(&raw.body).ok()?;

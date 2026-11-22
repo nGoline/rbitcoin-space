@@ -35,7 +35,7 @@ use engine::store::Store;
 use logging::events::{
     LedgerChecked, LedgerFillFailed, LedgerFilled, LedgerFollowFailed, LedgerFollowed,
     LedgerHistory, LedgerHistoryBound, LedgerHistoryFailed, LedgerSeedFailed, LedgerSeedRefused,
-    LedgerSeeded, LedgerTotalsRoute,
+    LedgerSeeded,
 };
 use node::esplora::model::ScriptInfo;
 use node::esplora::{Error, Esplora, RawResponse, Route, ScriptHash, ScriptRef, ScriptSize};
@@ -620,7 +620,6 @@ impl Ledger {
                 esplora: Esplora::with_limits(url, SEED_TIMEOUT, Esplora::DEFAULT_MAX_RESPONSE)
                     .ok()?,
                 electrum: network.electrum.clone(),
-                uncapped: Default::default(),
             },
             config,
             lane,
@@ -642,29 +641,9 @@ impl Ledger {
         &self.store
     }
 
-    /// Asks the node whether its socket adds up totals above its cap (docs/RBITCOIN.md, "Totals of
-    /// large addresses"), and logs the answer. Called when the node's connection is first ready
-    /// and after every reconnect; over TCP it asks nothing.
-    pub async fn detect(&self) {
-        if let Some(uncapped) = self.source.detect().await {
-            // Seeds the cap refused before the node was upgraded may run at once.
-            if uncapped {
-                self.seeds()
-                    .ended
-                    .retain(|_, (e, _)| !matches!(e, Ended::Refused(_)));
-            }
-            logging::emit(&LedgerTotalsRoute {
-                network: self.network,
-                uncapped,
-            });
-        }
-    }
-
-    /// Whether seeds add up addresses above the node's cap, as last found.
+    /// Whether seeds add up addresses above the node's cap: over its Esplora socket.
     fn uncapped(&self) -> bool {
-        self.source
-            .uncapped
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.source.uncapped()
     }
 
     pub fn is_tracked(&self, sh: ScriptHash) -> bool {
@@ -728,8 +707,7 @@ impl Ledger {
                 (left, height)
             };
             for sh in left {
-                self.track
-                    .ledger_changed(node::electrum::ScriptHash(sh.to_byte_array()), height);
+                self.track.ledger_changed(sh.electrum(), height);
             }
         }
     }
@@ -777,15 +755,14 @@ impl Ledger {
         }
         logging::emit(&LedgerSeeded {
             network: self.network,
-            scripthash: sh.to_string(),
+            scripthash: sh.electrum().to_string(),
             height: at.height,
             page,
             evicted,
             via,
             duration_ms: ms(took),
         });
-        self.track
-            .ledger_changed(node::electrum::ScriptHash(sh.to_byte_array()), at.height);
+        self.track.ledger_changed(sh.electrum(), at.height);
     }
 
     fn queue_found(&self, script: ScriptBuf) {
@@ -960,12 +937,11 @@ impl Ledger {
                 // Followers refetch the list, as after a block: it changed, or it is no longer
                 // `filling`.
                 if let Some(tip) = tip {
-                    self.track
-                        .ledger_changed(node::electrum::ScriptHash(sh.to_byte_array()), tip.height);
+                    self.track.ledger_changed(sh.electrum(), tip.height);
                 }
                 logging::emit(&LedgerFilled {
                     network: self.network,
-                    scripthash: sh.to_string(),
+                    scripthash: sh.electrum().to_string(),
                     height,
                     outcome,
                     rows,
@@ -980,7 +956,7 @@ impl Ledger {
         if failures.is_power_of_two() {
             logging::emit(&LedgerFillFailed {
                 network: self.network,
-                scripthash: sh.to_string(),
+                scripthash: sh.electrum().to_string(),
                 error,
                 failures,
                 duration_ms: ms(started.elapsed()),
@@ -1056,7 +1032,7 @@ impl Ledger {
                 if failures.is_power_of_two() {
                     logging::emit(&LedgerHistoryFailed {
                         network: self.network,
-                        scripthash: sh.to_string(),
+                        scripthash: sh.electrum().to_string(),
                         error: e.label(),
                         failures,
                         duration_ms: ms(took),
@@ -1067,7 +1043,7 @@ impl Ledger {
         };
         logging::emit(&LedgerHistory {
             network: self.network,
-            scripthash: sh.to_string(),
+            scripthash: sh.electrum().to_string(),
             outcome,
             height,
             rows,
@@ -1078,8 +1054,7 @@ impl Ledger {
         // address changed.
         self.reload().await;
         if let Some(t) = self.totals(sh).await {
-            self.track
-                .ledger_changed(node::electrum::ScriptHash(sh.to_byte_array()), t.at.height);
+            self.track.ledger_changed(sh.electrum(), t.at.height);
         }
     }
 
@@ -1176,7 +1151,7 @@ async fn run(ctx: Arc<NetworkContext>) {
                 let size = ctx.guard.check(&script, SEED_TIMEOUT).await;
                 logging::emit(&LedgerChecked {
                     network: ledger.network,
-                    scripthash: ScriptHash::from_script(&script).to_string(),
+                    scripthash: ScriptHash::from_script(&script).electrum().to_string(),
                     size: match size {
                         Some(Size::Small) => "small",
                         Some(Size::Large) => "large",
@@ -1239,10 +1214,7 @@ async fn follow(ctx: Arc<NetworkContext>) {
                 }
                 if let Some(tip) = f.tip {
                     for sh in &f.changed {
-                        ctx.track.ledger_changed(
-                            node::electrum::ScriptHash(sh.to_byte_array()),
-                            tip.height,
-                        );
+                        ctx.track.ledger_changed(sh.electrum(), tip.height);
                     }
                     seen_tip = Some(tip.height);
                 } else if ledger.config.discover
@@ -1312,7 +1284,7 @@ impl crate::ws::track::AddressGate for Guard {
         sh: node::electrum::ScriptHash,
     ) -> Pin<Box<dyn Future<Output = crate::ws::track::Decision> + Send + '_>> {
         use crate::ws::track::Decision;
-        let sh = ScriptHash::from_byte_array(sh.0);
+        let sh = ScriptHash::from_electrum(sh);
         Box::pin(async move {
             if let Some(ledger) = &self.ledger
                 && ledger.is_tracked(sh)
@@ -1462,9 +1434,10 @@ pub fn tracked_answer(
     }
     let (key, name) = match script_ref {
         ScriptRef::Address(a) => ("address", a.to_string()),
-        // As the node names it: a key is asked, and answered, by its script's hash.
+        // As the pass-through's answers name it, in digest order: a key is asked, and answered,
+        // by its script's hash.
         ScriptRef::ScriptHash(_) | ScriptRef::Key(_) => {
-            ("scripthash", script_ref.script_hash().to_string())
+            ("scripthash", script_ref.script_hash().digest_hex())
         }
     };
     let body = json!({

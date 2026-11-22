@@ -32,7 +32,7 @@ After that, [the reference](#reference): health, the data directory, the first s
 
 ### The node
 
-rbitcoin at **v0.9.2**, the version this release was built and tested against. The compose file runs one for you; if you bring your own, it needs these switched on:
+rbitcoin **`nightly-20261122`** (commit `e0b2c68`) or later, the build this release is tested against; the compose file pins it by digest. A v0.9.2 node is not supported: it answers the explorer's scripthash questions with empty histories ([`RBITCOIN.md`](RBITCOIN.md)). Coming from explorer 0.5.0, [upgrade in order](#upgrading-from-050). The compose file runs a node for you; if you bring your own, it needs these switched on:
 
 | Flag | The explorer uses it for | Without it |
 |---|---|---|
@@ -43,11 +43,11 @@ rbitcoin at **v0.9.2**, the version this release was built and tested against. T
 
 Esplora and Electrum have no authentication: never let anything but the server reach them. What the explorer relies on from each interface is in [`RBITCOIN.md`](RBITCOIN.md).
 
-**Large addresses.** Keep `--max-sh-creates` at rbitcoin's default (10,000 paying transactions) on a node that serves anyone but the server: raising it lets anyone start joins of millions of transactions. With the server on the node's Esplora unix socket and a node that has rbitcoin PR 1628 (nightly images from `nightly-20261114` on; no release yet), the server adds up an address above the cap through the socket, and logs `ledger_totals_route` `uncapped: true` ([`RBITCOIN.md`](RBITCOIN.md#totals-of-large-addresses)); such an address shows its totals and newest 200 transactions, and older pages are refused. On v0.9.2, or over TCP, it is shown as too large for this server ([`API.md`](API.md#very-large-addresses)).
+**Large addresses.** Keep `--max-sh-creates` at rbitcoin's default (10,000 paying transactions) on a node that serves anyone but the server: raising it lets anyone start joins of millions of transactions. With the server on the node's Esplora unix socket, the server adds up an address above the cap through the socket ([`RBITCOIN.md`](RBITCOIN.md#totals-of-large-addresses)); such an address shows its totals and the transactions of the blocks since, and its history pages are refused. Over TCP it is shown as too large for this server ([`API.md`](API.md#very-large-addresses)).
 
 #### Testnet 5
 
-Testnet 5 (BIP 95) needs an rbitcoin newer than v0.9.2: the nightly of 2026-11-14 (master `94dce31b`) or later, which knows `--network testnet5`. Set `RBITCOIN_IMAGE` to such a build. It has no DNS seeds yet, so add `--connect=<host>:18353` to the node's `command`, naming a Testnet 5 node you trust. There is no Lightning on it ([`CONFIG.md`](CONFIG.md#lightning)).
+The required node knows `--network testnet5` (BIP 95). It has no DNS seeds yet, so add `--connect=<host>:18353` to the node's `command`, naming a Testnet 5 node you trust. There is no Lightning on it ([`CONFIG.md`](CONFIG.md#lightning)).
 
 ### The host
 
@@ -64,7 +64,7 @@ More than 1,024 open pages at once: see [many WebSockets](#many-websockets).
 
 ## Same host, with the compose file
 
-[`deploy/compose.yml`](../deploy/compose.yml) runs rbitcoin v0.9.2 and the server side by side:
+[`deploy/compose.yml`](../deploy/compose.yml) runs rbitcoin `nightly-20261122` and the server side by side:
 
 ```text
  internet ── reverse proxy (TLS) ──► server :8080 ─┬─ unix socket ──► node  Esplora
@@ -662,17 +662,21 @@ Deleting it costs the backfill's time and loses the audits, the mempool chart's 
 ```sh
 mkdir -p backup
 docker run --rm -v rbitcoin-space_server-data:/data -v "$PWD/backup":/backup alpine:3 \
-  sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 -readonly /data/mainnet.sqlite ".backup /backup/mainnet.sqlite"'
+  sh -ec 'apk add --no-cache sqlite >/dev/null; for f in /data/*.sqlite; do sqlite3 -readonly "$f" ".backup /backup/${f##*/}"; done'
 ```
+
+Every network the server serves has its file; the loop backs up each, and stops at the first that fails (`sh -e`), so the command exits non-zero unless every file was copied.
 
 **Restore** with the server stopped, removing the old `-wal` and `-shm`:
 
 ```sh
-docker compose stop server
-docker run --rm -v rbitcoin-space_server-data:/data -v "$PWD/backup":/backup:ro alpine:3 \
-  sh -c 'rm -f /data/mainnet.sqlite-wal /data/mainnet.sqlite-shm && cp /backup/mainnet.sqlite /data/ && chown 65532:65532 /data/mainnet.sqlite'
-docker compose start server
+docker compose stop server &&
+  docker run --rm -v rbitcoin-space_server-data:/data -v "$PWD/backup":/backup:ro alpine:3 \
+  sh -ec 'for f in /backup/*.sqlite; do n=/data/${f##*/}; rm -f "$n-wal" "$n-shm"; cp "$f" "$n"; chown 65532:65532 "$n"; done' &&
+  docker compose start server
 ```
+
+Nothing is copied unless the server stopped, the loop stops at the first file that fails, and the server is started only when every file was restored: if it stops, fix the cause (disk space, most often) and run it again before starting anything.
 
 **Seed a new instance from one that has caught up,** to skip the backfill (about 18 hours for mainnet's block totals) and keep the audits, mempool history and replacements, which no backfill rebuilds. On the old instance, beside its compose file, copy each network's file and the Lightning graph without its node key:
 
@@ -706,8 +710,8 @@ With an empty store the server runs the **backfill**: it fills the block table f
 
 | | |
 |---|---|
-| How long | On mainnet about 19 hours, [measured](#one-day-on-mainnet), on a node with the block listing route; through `getblock` on v0.9.2, which lacks it, about a day more for the fee rates, estimated ([`STORE.md`](STORE.md#backfill)) |
-| What the node reads | About 18 GB with the listing route; about 550 GB through `getblock`, estimated. A node on the same host matters here |
+| How long | On mainnet about 19 hours, [measured](#one-day-on-mainnet) ([`STORE.md`](STORE.md#backfill)) |
+| What the node reads | About 18 GB. A node on the same host matters here |
 | Gentler | `BACKFILL_BUSY_PERCENT` (default 50), the share of time it keeps the node busy. `BACKFILL_FEE_RATE_DEPTH` (default 52560, a year); `0` skips fee rates, computed on demand instead ([`CONFIG.md`](CONFIG.md#block-table)) |
 | Pause | `BACKFILL_ENABLED=false` and `docker compose up -d`; set it back to resume |
 | Progress | `block_backfill_progress` every minute while it writes: `rows` and `rated` against `tip`. A line without them means the count timed out |
@@ -812,15 +816,33 @@ docker compose logs --no-log-prefix server | grep store_migration_applied
 
 ```sh
 VERSION=0.1.0                               # the release you go back to
-docker compose stop server
-docker run --rm -v rbitcoin-space_server-data:/data -v "$PWD/backup":/backup:ro alpine:3 \
-  sh -c 'rm -f /data/mainnet.sqlite-wal /data/mainnet.sqlite-shm && cp /backup/mainnet.sqlite /data/ && chown 65532:65532 /data/mainnet.sqlite'
-git fetch --depth 1 origin tag "v$VERSION" && git checkout "v$VERSION"
-sed -i.bak "s|^SERVER_IMAGE=.*|SERVER_IMAGE=ghcr.io/smolcars/rbitcoin-space:$VERSION|" .env && rm .env.bak
-docker compose up -d
+docker compose stop server &&
+  docker run --rm -v rbitcoin-space_server-data:/data -v "$PWD/backup":/backup:ro alpine:3 \
+  sh -ec 'for f in /backup/*.sqlite; do n=/data/${f##*/}; rm -f "$n-wal" "$n-shm"; cp "$f" "$n"; chown 65532:65532 "$n"; done' &&
+  git fetch --depth 1 origin tag "v$VERSION" && git checkout "v$VERSION" &&
+  sed -i.bak "s|^SERVER_IMAGE=.*|SERVER_IMAGE=ghcr.io/smolcars/rbitcoin-space:$VERSION|" .env && rm .env.bak &&
+  docker compose up -d
 ```
 
-What was observed between the backup and the rollback is lost. Without a backup, delete `mainnet.sqlite`: the old release starts empty and backfills. Without a migration, only the image changes.
+Each step runs only when the one before it succeeded, the restore of every file included.
+
+What was observed between the backup and the rollback is lost. Without a backup, delete each network's `.sqlite` file: the old release starts empty and backfills. Going back to 0.5.0 from a later release also needs nodes it agrees with ([below](#upgrading-from-050)). Without a migration, only the image changes.
+
+#### Upgrading from 0.5.0
+
+Explorer 0.5.0 asks Esplora for scripthashes byte-reversed, as rbitcoin v0.9.2 and the nightlies before `nightly-20261122` read them. The releases after it ask in digest order, which only `nightly-20261122` and later read ([`RBITCOIN.md`](RBITCOIN.md#scripthash-order)). An explorer and a node that disagree get `200` with empty totals and empty histories for every script asked by hash, and the explorer **writes some of that into its store**, in its ledger of large addresses ([`API.md`](API.md#very-large-addresses)):
+
+- **With nobody visiting:** every kept address still waiting for its page of transactions from before its seed asks it, gets an empty page, and is marked filled for good, so it never lists them.
+- **When a reader opens a large address:** one refused for size, or answered with more than 10,000 funded outputs under a raised cap, is added up and kept. A seed that asks the node for its totals by hash (one refused for size) is kept with empty totals, and shows them plus the blocks after it for as long as it is kept; its whole history is then refused as not matching them. One adopted from the address's own totals keeps the right totals, but its page is empty and marked filled as above.
+
+Discovery checks sizes by hash, sees every script as small and keeps nothing; the answers held in memory right themselves on a restart. The store does not. So the explorer must not run while it and any of its nodes disagree, in either direction: neither 0.5.0 against an upgraded node, nor a later release against an old one. Run the commands from `deploy/`, naming the service in each: a bare `docker compose up -d` starts every service, the stopped explorer too.
+
+1. Back up every network's store ([the data directory](#the-data-directory)).
+2. Stop the explorer: `docker compose stop server`.
+3. Upgrade the node to `nightly-20261122` or later and start it alone. With the compose file, check out the release after 0.5.0 (`git fetch --depth 1 origin tag "v$VERSION" && git checkout "v$VERSION"`), keep `RBITCOIN_IMAGE` unset in `.env` (or set it to such a build), check that `docker compose config --images` lists `ghcr.io/rbitcoin-org/rbitcoin:nightly-20261122@sha256:1a7208ea757c7b2b605f5cfda7a0b483f75fba9bd54de9639e955859c5d34d7a` or a later build, then run `docker compose up -d node`. A node [on another host](#the-node-on-another-host) or [in another compose project](#the-node-in-another-compose-project) is upgraded where it runs. Its first start moves its store from schema 28 (or 27) to 30, one way: an older node will not open it afterwards. Wait until it is synced and `docker compose logs node` shows its Esplora listening.
+4. With every network's node upgraded, set `SERVER_IMAGE` to the release after 0.5.0 (or later, never 0.5.0; or a [`master` image](#images-of-master) from the same commit on) and start it alone: `docker compose up -d server`. Check `curl -s http://127.0.0.1:8080/healthz`: a release's `version` is above `0.5.0`; a `master` image keeps `0.5.0` until that release, so check its `revision` instead, which is the commit its image was built from and must be the one whose compose file pins `nightly-20261122`.
+
+**Going back to 0.5.0** needs a node that reads reversed scripthashes on every network, and a node store already at schema 30 cannot be opened by one: that means re-syncing each node from an empty directory on the older build, which takes hours to days. Keep the explorer stopped until every network has a node that matches it, and take the newer build out of `.env` first (`RBITCOIN_IMAGE`, if step 3 set it there), or compose puts the newer node back. Then [roll back](#upgrading) with the backup from step 1, with one change: end with `docker compose up -d --no-deps server` instead of `docker compose up -d`, so the command starts the explorer alone and cannot replace a node you have just synced. If either explorer ran against a node it disagrees with, restore that backup too, with the explorer stopped.
 
 #### Images of `master`
 
@@ -947,7 +969,7 @@ Read [the log](#watching-it) and `/readyz`.
 | The disk filled: no new rows, audits or mempool chart; `/readyz` `store` `failing` | `store_write_failed` with `disk_full`; `block_rows_failed` with `store` | Free space. No restart needed: the next write logs `store_write_recovered`. Block rows are filled in; missed mempool minutes are a gap |
 | `/readyz` `store` `failing`, other reasons | `store_write_failed` with `read_only` (a read-only mount, or not owned by uid 65532), `corrupt`, `busy` (another process holds the lock, such as a long backup) or `io` | `read_only`: fix the mount or ownership, then `docker compose restart server`. `corrupt`: [restore a backup](#the-data-directory) or delete the file. `busy`: let the other process finish |
 | `docker compose up` or a pull hangs on a host nobody is logged in to | | A Docker credential helper (`credsStore` in `~/.docker/config.json`) waits for an unlock prompt. The release image needs no login: pull with `DOCKER_CONFIG` pointing at a directory whose `config.json` sets no `credsStore` |
-| `docker pull` from ghcr.io does not work at all | | Load the rbitcoin image another way and set `RBITCOIN_IMAGE=ghcr.io/rbitcoin-org/rbitcoin:0.9.2`: a loaded image has no digest to match the compose file's pin |
+| `docker pull` from ghcr.io does not work at all | | Load the rbitcoin image another way and set `RBITCOIN_IMAGE=ghcr.io/rbitcoin-org/rbitcoin:nightly-20261122`: a loaded image has no digest to match the compose file's pin |
 | `failed to bind host port 127.0.0.1:8080/tcp: address already in use` | Nothing: the server never started | Set `HTTP_PUBLISH` to a free port, and point the proxy at it |
 | The disk fills with logs | | The compose file's `local` driver rotates (100 MB a container). A container started another way uses `json-file`, which does not: add `--log-driver local` |
 

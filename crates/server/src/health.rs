@@ -273,17 +273,13 @@ impl AddressIndex {
     }
 }
 
-/// A scripthash no script hashes to, so asking for its stats is one index lookup that finds
-/// nothing: the cheapest question the address routes answer.
-const NO_SCRIPT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
 /// Asks the node whether it has its address index (`--sh-index`) once Electrum is first ready,
 /// then after every reconnect, since the node may have been restarted with other flags, and every
 /// [`CHECK_EVERY`] while the question has no answer. Logs the first answer and each change.
 pub async fn watch_address_index(ctx: Arc<NetworkContext>) {
-    let Ok(probe) = NO_SCRIPT.parse::<ScriptHash>() else {
-        return;
-    };
+    // No script hashes to it, so asking for its stats is one index lookup that finds nothing:
+    // the cheapest question the address routes answer.
+    let probe = ScriptHash::NONE;
     // Subscribed before the first question, so a reconnect during it is still heard.
     let mut events = ctx.electrum.events();
     if ctx.electrum.health().wait_for(|h| h.ready).await.is_err() {

@@ -5,7 +5,6 @@
 //! raw string, so a client string cannot reach the node (SECURITY.md rules 2–3).
 
 use std::fmt::{self, Write as _};
-use std::str::FromStr;
 
 use bitcoin::hashes::{Hash as _, sha256};
 use bitcoin::hex::{DisplayHex as _, FromHex as _};
@@ -16,45 +15,55 @@ use hyper::Method;
 /// Largest batch `POST /block-heights/txs/outs` accepts.
 pub const MAX_OUT_POSITIONS: usize = 300;
 
-/// An Electrum scripthash: SHA-256 of the scriptPubKey, shown byte-reversed.
+/// A script's SHA-256: the key the node's address index, its Electrum server and this server's
+/// own tables know a script by. It has no text form of its own, because the interfaces write it
+/// in two orders: Electrum byte-reversed ([`ScriptHash::electrum`]), Esplora (rbitcoin from
+/// `nightly-20261122`, electrs, mempool.space) and this server's public API in digest order
+/// ([`ScriptHash::from_digest_hex`], [`ScriptHash::digest_hex`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScriptHash([u8; 32]);
 
 impl ScriptHash {
+    /// The all-zero hash, which no script has: asking for it runs no join.
+    pub const NONE: Self = Self([0; 32]);
+
     pub fn from_script(script: &bitcoin::Script) -> Self {
         let mut bytes = sha256::Hash::hash(script.as_bytes()).to_byte_array();
         bytes.reverse();
         Self(bytes)
     }
 
-    /// The 32 bytes in the order shown.
+    /// The 32 bytes as this server stores them: Electrum's order. For the store only.
     pub fn to_byte_array(self) -> [u8; 32] {
         self.0
     }
 
+    /// From the bytes [`ScriptHash::to_byte_array`] gave. For the store only.
     pub fn from_byte_array(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
-}
 
-impl FromStr for ScriptHash {
-    type Err = bitcoin::hex::HexToArrayError;
-    /// Exactly 64 hex characters, as shown.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        <[u8; 32]>::from_hex(s).map(Self)
+    /// Electrum's form of the same hash.
+    pub fn electrum(self) -> crate::electrum::ScriptHash {
+        crate::electrum::ScriptHash(self.0)
     }
-}
 
-impl fmt::Display for ScriptHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.as_hex())
+    pub fn from_electrum(sh: crate::electrum::ScriptHash) -> Self {
+        Self(sh.0)
     }
-}
 
-impl<'de> serde::Deserialize<'de> for ScriptHash {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        s.parse().map_err(serde::de::Error::custom)
+    /// Exactly 64 hex characters of the SHA-256 digest as hashed, Esplora's form.
+    pub fn from_digest_hex(s: &str) -> Result<Self, bitcoin::hex::HexToArrayError> {
+        let mut bytes = <[u8; 32]>::from_hex(s)?;
+        bytes.reverse();
+        Ok(Self(bytes))
+    }
+
+    /// The digest as hashed, in lowercase hex: Esplora's form.
+    pub fn digest_hex(self) -> String {
+        let mut bytes = self.0;
+        bytes.reverse();
+        bytes.as_hex().to_string()
     }
 }
 
@@ -175,7 +184,7 @@ pub enum Route {
         start: BlockTxsStart,
     },
     BlockRaw(BlockHash),
-    /// `[txid, fee, weight, value]` per transaction. Not in rbitcoin v0.9.2, which answers 400.
+    /// `[txid, fee, weight, value]` per transaction.
     BlockTxsSummary(BlockHash),
     /// The txid at `index` in the block.
     BlockTxid {
@@ -280,8 +289,8 @@ pub enum Route {
     InternalBlockTxs(BlockHash),
     InternalOutspendsByTxid(Vec<Txid>),
     InternalOutspendsByOutpoint(Vec<OutPoint>),
-    /// [`Route::ScriptStats`] without the node's `--max-sh-creates` refusal (rbitcoin PR 1628,
-    /// after v0.9.2): the same JSON, `?asof=` and chain-tip stamp.
+    /// [`Route::ScriptStats`] without the node's `--max-sh-creates` refusal (rbitcoin PR 1628):
+    /// the same JSON, `?asof=` and chain-tip stamp.
     InternalScriptStats {
         script: ScriptRef,
         asof: Option<BlockHash>,
@@ -549,8 +558,9 @@ impl Route {
 fn write_script(o: &mut String, s: &ScriptRef) -> fmt::Result {
     match s {
         ScriptRef::Address(a) => write!(o, "/address/{a}"),
-        ScriptRef::ScriptHash(h) => write!(o, "/scripthash/{h}"),
-        ScriptRef::Key(_) => write!(o, "/scripthash/{}", s.script_hash()),
+        ScriptRef::ScriptHash(_) | ScriptRef::Key(_) => {
+            write!(o, "/scripthash/{}", s.script_hash().digest_hex())
+        }
     }
 }
 
@@ -558,6 +568,7 @@ fn write_script(o: &mut String, s: &ScriptRef) -> fmt::Result {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::str::FromStr as _;
 
     fn path(r: &Route) -> String {
         let mut s = String::new();
@@ -571,7 +582,7 @@ mod tests {
     fn paths_and_queries() {
         let h: BlockHash = H.parse().unwrap();
         let t: Txid = H.parse().unwrap();
-        let sh = ScriptRef::ScriptHash(H.parse().unwrap());
+        let sh = ScriptRef::ScriptHash(ScriptHash::from_digest_hex(H).unwrap());
         assert_eq!(
             path(&Route::Blocks {
                 start_height: Some(7)
@@ -672,6 +683,89 @@ mod tests {
         assert_eq!(batch.method(), Method::POST);
     }
 
+    /// The regtest harness's miner script, P2WSH of `OP_TRUE`, its SHA-256, and Electrum's form
+    /// of it: the bytes reversed.
+    const MINER_SCRIPT: &str =
+        "00204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260";
+    const MINER_DIGEST: &str = "401a08bd4ceb96daf138cd8767abceb68ce779895897dd32edfedab6ce30445c";
+    const MINER_REVERSED: &str = "5c4430ceb6dafeed32dd97588979e78cb6ceab6787cd38f1da96eb4cbd081a40";
+
+    #[test]
+    fn esplora_takes_the_digest_and_electrum_the_reverse() {
+        let script = ScriptBuf::from_hex(MINER_SCRIPT).unwrap();
+        let sh = ScriptHash::from_script(&script);
+        assert_eq!(sh.digest_hex(), MINER_DIGEST);
+        assert_eq!(ScriptHash::from_digest_hex(MINER_DIGEST).unwrap(), sh);
+        assert_eq!(sh.electrum().to_string(), MINER_REVERSED);
+        assert_eq!(ScriptHash::from_electrum(sh.electrum()), sh);
+
+        // Every route that names a script by hash, the uncapped socket one included.
+        let script = ScriptRef::ScriptHash(sh);
+        for (route, tail) in [
+            (
+                Route::ScriptStats {
+                    script: script.clone(),
+                    asof: None,
+                },
+                "",
+            ),
+            (
+                Route::ScriptUtxo {
+                    script: script.clone(),
+                    asof: None,
+                },
+                "/utxo",
+            ),
+            (
+                Route::ScriptTxs {
+                    script: script.clone(),
+                    after: None,
+                    asof: None,
+                },
+                "/txs",
+            ),
+            (Route::ScriptTxsMempool(script.clone()), "/txs/mempool"),
+            (
+                Route::ScriptTxsChain {
+                    script: script.clone(),
+                    last_seen: None,
+                    asof: None,
+                },
+                "/txs/chain",
+            ),
+            (
+                Route::ScriptTxsSummary {
+                    script: script.clone(),
+                    last_seen: None,
+                    asof: None,
+                },
+                "/txs/summary",
+            ),
+        ] {
+            assert_eq!(path(&route), format!("/scripthash/{MINER_DIGEST}{tail}"));
+        }
+        assert_eq!(
+            path(&Route::InternalScriptStats { script, asof: None }),
+            format!("/internal/scripthash/{MINER_DIGEST}")
+        );
+
+        // A key is asked by its pay-to-pubkey script's hash.
+        let key = PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        assert_eq!(
+            path(&Route::ScriptStats {
+                script: ScriptRef::Key(key),
+                asof: None
+            }),
+            format!(
+                "/scripthash/{}",
+                ScriptHash::from_script(&ScriptBuf::new_p2pk(&key)).digest_hex()
+            )
+        );
+    }
+
     #[test]
     fn addresses_are_written_canonically() {
         let a: Address = "BC1QAR0SRRR7XFKVY5L643LYDNW9RE59GTZZWF5MDQ"
@@ -700,8 +794,8 @@ mod tests {
         };
         assert!(OutPositions::new(vec![pos; MAX_OUT_POSITIONS]).is_some());
         assert!(OutPositions::new(vec![pos; MAX_OUT_POSITIONS + 1]).is_none());
-        assert!("../etc".parse::<ScriptHash>().is_err());
-        assert!(format!("{H}/x").parse::<ScriptHash>().is_err());
+        assert!(ScriptHash::from_digest_hex("../etc").is_err());
+        assert!(ScriptHash::from_digest_hex(&format!("{H}/x")).is_err());
     }
 
     #[test]
@@ -710,9 +804,14 @@ mod tests {
         let script =
             bitcoin::ScriptBuf::from_hex("76a91462e907b15cbf27d5425399ebf6f0fb50ebb88f1888ac")
                 .unwrap();
+        let sh = ScriptHash::from_script(&script);
         assert_eq!(
-            ScriptHash::from_script(&script).to_string(),
+            sh.electrum().to_string(),
             "8b01df4e368ea28f8dc0423bcf7a4923e3a12d307c875e47a0cfbf90b5c39161"
+        );
+        assert_eq!(
+            sh.digest_hex(),
+            "6191c3b590bfcfa0475e877c302da1e323497acf3b42c08d8fa28e364edf018b"
         );
     }
 }

@@ -16,7 +16,7 @@ use bitcoin::{Address, BlockHash, Network, Txid};
 use node::esplora::model::ScriptType;
 use node::esplora::{
     BlockTxsStart, ChainTip, Error, Esplora, MAX_BLOCK_TXS, MAX_SUMMARY_BYTES, OutPosition,
-    OutPositions, Route, ScriptRef, TipCheck, consistent,
+    OutPositions, Route, ScriptHash, ScriptRef, TipCheck, consistent,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixListener};
@@ -492,7 +492,7 @@ async fn maps_upstream_errors() {
     ));
 }
 
-/// `/block/:hash/txs/summary`: what rbitcoin after v0.9.2 answers, what v0.9.2 answers, and
+/// `/block/:hash/txs/summary`: what rbitcoin answers, what a node without the route answers, and
 /// every malformed or oversized answer as an error, never a panic.
 #[tokio::test]
 async fn decodes_block_txs_summaries_defensively() {
@@ -761,7 +761,7 @@ async fn sends_asof_and_cursors() {
     let c = Esplora::new(&url).unwrap();
     let h: BlockHash = BLOCK_800K.parse().unwrap();
     let t = txid(TIP_A);
-    let sh = ScriptRef::ScriptHash(TIP_A.parse().unwrap());
+    let sh = ScriptRef::ScriptHash(ScriptHash::from_digest_hex(TIP_A).unwrap());
     c.script_txs_chain(sh.clone(), Some(t), Some(h))
         .await
         .unwrap();

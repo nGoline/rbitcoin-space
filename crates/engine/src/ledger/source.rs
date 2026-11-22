@@ -1,8 +1,6 @@
 //! What the ledger reads from the node.
 
 use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bitcoin::{BlockHash, Script};
@@ -35,12 +33,13 @@ pub trait Source: Send + Sync + 'static {
         script: &Script,
         at: BlockHash,
     ) -> impl Future<Output = Result<Result<Totals, Option<ScriptSize>>, SourceError>> + Send;
-    /// The script's newest page of confirmed history as of block `at`, newest first.
+    /// The script's newest page of confirmed history as of block `at`, newest first; or the
+    /// node's refusal for size, as its `--max-sh-creates` refuses a page that reads every create.
     fn page(
         &self,
         script: &Script,
         at: BlockHash,
-    ) -> impl Future<Output = Result<Vec<TxSummary>, SourceError>> + Send;
+    ) -> impl Future<Output = Result<Result<Vec<TxSummary>, Option<ScriptSize>>, SourceError>> + Send;
     /// The script's whole confirmed history as of block `at`, in the node's order (height, then
     /// txid bytes, ascending), sent to `rows` in batches as it arrives; or the node's size refusal.
     /// A closed `rows` stops it with an error.
@@ -62,14 +61,7 @@ pub struct NodeSource {
     pub esplora: Esplora,
     /// `host:port` of the node's Electrum server.
     pub electrum: String,
-    /// Whether the node's Esplora socket adds totals up above its `--max-sh-creates` (rbitcoin PR
-    /// 1628): then [`Source::totals`] asks that route. Set by [`NodeSource::detect`]; false until
-    /// then, and always over TCP.
-    pub uncapped: Arc<AtomicBool>,
 }
-
-/// How long [`NodeSource::detect`] waits for the node.
-pub const DETECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the whole history list may take, as a seed (the server's lane holds it that long).
 pub const HISTORY_TIMEOUT: Duration = Duration::from_secs(900);
@@ -93,30 +85,11 @@ fn pinned<T>(s: esplora::Stamped<T>, at: BlockHash) -> Result<T, SourceError> {
 }
 
 impl NodeSource {
-    /// Asks the node whether its socket serves the uncapped totals route, for a scripthash no
-    /// script has (all zeros), which runs no join: `200` it does, `404` it does not (a node
-    /// without the route does not know the path). Anything else, or no answer within
-    /// [`DETECT_TIMEOUT`], leaves what was known and gives `None`. Over TCP the route never
-    /// exists, so nothing is asked.
-    pub async fn detect(&self) -> Option<bool> {
-        if !self.esplora.has_internal() {
-            return None;
-        }
-        let route = Route::InternalScriptStats {
-            script: ScriptRef::ScriptHash(esplora::ScriptHash::from_byte_array([0; 32])),
-            asof: None,
-        };
-        let raw = tokio::time::timeout(DETECT_TIMEOUT, self.esplora.raw(&route))
-            .await
-            .ok()?
-            .ok()?;
-        let has = match raw.status.as_u16() {
-            200 => true,
-            404 => false,
-            _ => return None,
-        };
-        self.uncapped.store(has, Ordering::Relaxed);
-        Some(has)
+    /// Whether totals above the node's `--max-sh-creates` can be asked: on its Esplora unix
+    /// socket, through `/internal/scripthash/:hash` (docs/RBITCOIN.md, "Totals of large
+    /// addresses"). Over TCP the route does not exist.
+    pub fn uncapped(&self) -> bool {
+        self.esplora.has_internal()
     }
 }
 
@@ -177,32 +150,39 @@ impl Source for NodeSource {
         at: BlockHash,
     ) -> Result<Result<Totals, Option<ScriptSize>>, SourceError> {
         let asof = Some(at);
-        if self.uncapped.load(Ordering::Relaxed) {
-            let route = Route::InternalScriptStats {
-                script: script_ref(script),
-                asof,
-            };
-            let raw = self.esplora.raw(&route).await.map_err(esplora_err)?;
-            // A 404 is a block the node does not know, or a node without the route since the last
-            // probe: asked again, only the latter goes to the capped route.
-            if raw.status.as_u16() != 404 || self.detect().await != Some(false) {
-                return totals_at(raw, at);
-            }
-        }
-        let route = Route::ScriptStats {
-            script: script_ref(script),
-            asof,
+        let script = script_ref(script);
+        let route = if self.uncapped() {
+            Route::InternalScriptStats { script, asof }
+        } else {
+            Route::ScriptStats { script, asof }
         };
         totals_at(self.esplora.raw(&route).await.map_err(esplora_err)?, at)
     }
 
-    async fn page(&self, script: &Script, at: BlockHash) -> Result<Vec<TxSummary>, SourceError> {
-        let s = self
-            .esplora
-            .script_txs_summary(script_ref(script), None, Some(at))
-            .await
-            .map_err(esplora_err)?;
-        pinned(s, at)
+    async fn page(
+        &self,
+        script: &Script,
+        at: BlockHash,
+    ) -> Result<Result<Vec<TxSummary>, Option<ScriptSize>>, SourceError> {
+        let route = Route::ScriptTxsSummary {
+            script: script_ref(script),
+            last_seen: None,
+            asof: Some(at),
+        };
+        let raw = self.esplora.raw(&route).await.map_err(esplora_err)?;
+        if raw.status.as_u16() != 200 {
+            return match esplora::Error::from_status(raw.status, &raw.body) {
+                esplora::Error::TooLarge => Ok(Err(ScriptSize::from_refusal(&raw.body))),
+                e => Err(esplora_err(e)),
+            };
+        }
+        let rows: Vec<TxSummary> = serde_json::from_slice(&raw.body)
+            .map_err(|e| SourceError::Failed(format!("page: {e}")))?;
+        let stamped = esplora::Stamped {
+            value: rows,
+            tip: raw.tip,
+        };
+        Ok(Ok(pinned(stamped, at)?))
     }
 
     async fn history(
@@ -212,8 +192,7 @@ impl Source for NodeSource {
         rows: mpsc::Sender<Vec<Row>>,
     ) -> Result<Result<(), Option<ScriptSize>>, SourceError> {
         let addr = self.electrum.clone();
-        let sh =
-            node::electrum::ScriptHash(esplora::ScriptHash::from_script(script).to_byte_array());
+        let sh = esplora::ScriptHash::from_script(script).electrum();
         let read = tokio::task::spawn_blocking(move || {
             list::list(
                 &addr,

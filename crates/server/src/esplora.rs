@@ -501,7 +501,7 @@ impl Drop for Ended {
 ///
 /// A page of address history whose node call runs past the history timeout is answered `504` at
 /// that moment and remembered, so it is refused at once for a while; its call keeps its places
-/// until the node has finished. A totals or unspent answer the node refuses for size is
+/// until the node has finished. A totals, unspent or history answer the node refuses for size is
 /// remembered too: that script's history is refused at once for the same while.
 async fn heavy(ctx: &NetworkContext, client: &Client, route: Route, key: String) -> Response {
     let call = route.clone();
@@ -513,8 +513,11 @@ async fn heavy(ctx: &NetworkContext, client: &Client, route: Route, key: String)
             started: None,
         }
     });
-    // Learned in the call's own task, so a client that hangs up first does not lose it.
-    let size = verdicts::unpaged_script(&route).map(|s| (s, Arc::clone(&ctx.api.verdicts)));
+    // Learned in the call's own task, so a client that hangs up first does not lose it. The node
+    // refuses a page for size as it refuses totals, with the script's counts.
+    let size = verdicts::unpaged_script(&route)
+        .or_else(|| verdicts::history_page(&route).map(|(s, _)| s))
+        .map(|s| (s, Arc::clone(&ctx.api.verdicts)));
     let known = verdicts::history_page(&route).map(|p| (p, Arc::clone(&ctx.api.verdicts)));
     match heavy_call(ctx, client, key, deadline, move |esplora| async move {
         // A verdict learned while this call waited for its slot still spares the node.
@@ -539,8 +542,8 @@ async fn heavy(ctx: &NetworkContext, client: &Client, route: Route, key: String)
     .await
     {
         // Refused by a verdict learned while it waited: counted as a refusal, like one refused on
-        // arrival. The node never refuses a page for size, and a page it timed out on took the
-        // whole history timeout, so neither answer is taken for the other.
+        // arrival. The node's own refusal is an answer, not this error, and a page it timed out on
+        // took the whole history timeout, so neither is taken for the other.
         Ok((Err(Error::TooLarge), _)) if verdicts::history_page(&route).is_some() => {
             refused_early(Verdict::TooLarge(None))
         }
@@ -1176,8 +1179,9 @@ fn parse_segments(segs: &[&str], q: &mut Query<'_>, network: Network) -> Result<
             let script = if kind == "address" {
                 payee(s, network)?.script_ref()
             } else {
+                // The digest as hashed, as the node, electrs and mempool.space take it.
                 ScriptRef::ScriptHash(
-                    ScriptHash::from_str(s)
+                    ScriptHash::from_digest_hex(s)
                         .map_err(|_| ApiError::bad_request("invalid scripthash"))?,
                 )
             };
@@ -1713,7 +1717,7 @@ mod tests {
 
     /// A signet key paid 513 times, and the hash of its pay-to-pubkey script as the node takes it.
     const KEY: &str = "04a8c3fa3dbc022ca7c9a2214c5e673833317b3cff37c0fc170fc347f1a2f6b6e2a53db4d023387f89209de481cd014a44040e1b09c3226d40fed02c0bc8d0f548";
-    const KEY_SH: &str = "8c4d828b38197ebf595cf0c96da868cf9aea7cc55a3bb1c4fb688c0a941fa9d0";
+    const KEY_SH: &str = "d0a91f940a8c68fbc4b13b5ac57cea9acf68a86dc9f05c59bf7e19388b824d8c";
     /// The curve's generator, compressed.
     const G: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
@@ -1736,7 +1740,10 @@ mod tests {
         // A compressed key is paid by its own, shorter script.
         let script = ScriptBuf::from_hex(&format!("21{G}ac")).unwrap();
         let sh = ScriptHash::from_script(&script);
-        assert_eq!(ok(&format!("address/{G}")), format!("/scripthash/{sh}"));
+        assert_eq!(
+            ok(&format!("address/{G}")),
+            format!("/scripthash/{}", sh.digest_hex())
+        );
         // The route keeps the script, which the guard hands the ledger with a large key's totals.
         let Call::Read(Route::ScriptStats { script: kept, .. }) =
             parse(&format!("address/{G}"), None, Network::Mainnet).unwrap()
