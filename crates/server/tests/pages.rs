@@ -735,12 +735,14 @@ async fn with_the_site_address_every_page_has_the_picture_and_its_own_address() 
         };
         match card {
             Some(card) => assert_eq!(image, card, "{target}"),
-            None => assert!(
-                image.starts_with("https://rbitcoin.space/assets/preview-")
-                    && image.ends_with(".png"),
-                "{target}: {image}"
+            None => assert_eq!(
+                image,
+                format!("https://rbitcoin.space/{PICTURE}"),
+                "{target}"
             ),
         }
+        let cards = r.body.matches(r#"<meta name="twitter:card""#).count();
+        assert_eq!(cards, 1, "{target}");
         assert_eq!(r.meta("name", "twitter:image"), image, "{target}");
         assert_eq!(r.meta("property", "og:image:type"), "image/png");
         assert_eq!(r.meta("property", "og:image:width"), "1200");
@@ -754,6 +756,25 @@ async fn with_the_site_address_every_page_has_the_picture_and_its_own_address() 
     }
     // A path that names no page is still the shell as built.
     assert_eq!(get(&addr, "/no/such/page").await.body, SHELL);
+}
+
+#[tokio::test]
+async fn a_shell_without_a_whole_title_is_served_as_built() {
+    for (name, shell) in [
+        ("untitled", "<!doctype html><head></head><body>app</body>"),
+        (
+            "unended",
+            "<!doctype html><head><title>rbitcoin.space</head><body>app</body>",
+        ),
+    ] {
+        let dir = temp(name);
+        std::fs::write(dir.0.join("web/index.html"), shell).unwrap();
+        let (addr, _) = start(&dir.0).await;
+        for path in ["/".to_owned(), format!("/tx/{TXID}")] {
+            let r = get(&addr, &path).await;
+            assert_eq!((r.status, r.body.as_str()), (200, shell), "{name} {path}");
+        }
+    }
 }
 
 #[tokio::test]
