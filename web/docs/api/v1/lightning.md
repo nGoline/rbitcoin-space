@@ -91,6 +91,10 @@ The answer, cut to the first of 144 points:
 
 Nodes and channels matching `searchText`: public keys by prefix, then aliases by substring, most capacity first, at most 10 nodes. A `searchText` that reads as a channel id also returns that channel, open or closed.
 
+| Parameter    | Format                       |
+| ------------ | ---------------------------- |
+| `searchText` | Required. 3 to 66 characters |
+
 ```sh
 curl 'https://rbitcoin.space/api/v1/lightning/search?searchText=acinq'
 ```
@@ -406,6 +410,10 @@ curl https://rbitcoin.space/api/v1/lightning/channels/811984x2037x0
 
 The channels that transactions opened or closed. Pass up to 100 txids as `txId[]`. Also served at `/api/v1/lightning/channels/txids/`, with a trailing slash.
 
+| Parameter | Format                                                                 |
+| --------- | ---------------------------------------------------------------------- |
+| `txId[]`  | A txid; repeat it for each, up to 100. Without any, the answer is `[]` |
+
 ```sh
 curl -g 'https://rbitcoin.space/api/v1/lightning/channels/txids?txId[]=a7f10c2595c8ea0cc85c3183709d10aada60c7b87fe0c405f3f5b8a44150d4f5'
 ```
@@ -479,21 +487,9 @@ curl https://rbitcoin.space/api/v1/lightning/nodes/isp-ranking
 
 The three capacities are sats and add up to the whole network. `ispRanking`, capacity per hosting provider, is always `[]`: this server has no provider database.
 
-## GET /api/v1/lightning/channels-geo
-
-`[]`, and so is `/api/v1/lightning/channels-geo/:key`: this server has no location data. mempool.space answers the same for a node with no known place. A `:key` that is not 66 hex digits is still `400`, and the `503`s below apply as on every route here.
-
-```sh
-curl https://rbitcoin.space/api/v1/lightning/channels-geo
-```
-
-```json
-[]
-```
-
 ## Not served
 
-These mempool.space routes are `404` here: `/nodes/countries`, `/nodes/country/:code`, `/nodes/isp/:asn` and `/nodes/world`, which need location data; `/penalties`; and `/nodes/group/:name`, which is mempool.space's own curation.
+These mempool.space routes are `404` here: `/nodes/countries`, `/nodes/country/:code`, `/nodes/isp/:asn` and `/nodes/world`, which need location data; `/penalties`; and `/nodes/group/:name`, which is mempool.space's own curation. `/channels-geo` and `/channels-geo/:key` answer `[]` for every node, as mempool.space does for a node with no known place: this server has no location data. A `:key` that is not 66 hex digits is still `400`, and the `503`s below apply.
 
 ## Errors
 

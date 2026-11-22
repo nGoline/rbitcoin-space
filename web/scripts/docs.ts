@@ -30,9 +30,16 @@ export function docs(): Plugin {
           this.addWatchFile(file);
           sources.set(p.slug, readFileSync(file, "utf8"));
         }
+        // The API's version is the server's: the workspace's, in Cargo.toml beside web/.
+        const manifest = resolve(root, "..", "Cargo.toml");
+        this.addWatchFile(manifest);
+        const cargo = readFileSync(manifest, "utf8");
+        const workspace = cargo.slice(cargo.indexOf("[workspace.package]"));
+        const version = /^version = "([^"]+)"/m.exec(workspace)?.[1];
+        if (version === undefined) this.error("docs: no version in Cargo.toml");
         const html = template.source;
         delete bundle["docs.html"];
-        for (const [fileName, source] of build(html, sources)) {
+        for (const [fileName, source] of build(html, sources, version)) {
           this.emitFile({ type: "asset", fileName, source });
         }
       },
