@@ -1,30 +1,11 @@
-// The accessibility pass (docs/FRONTEND.md "Accessibility"): every page type under axe-core, a
-// keyboard walk, reduced motion, and the shell and a dense page at a large text size.
-import { readFileSync } from "node:fs";
+// The accessibility pass (docs/FRONTEND.md "Accessibility"): every page in e2e/pages.ts under
+// axe-core, a keyboard walk, reduced motion, and at a large text size.
 import type { Page } from "@playwright/test";
-import {
-  ARKADE_ADDRESS,
-  ARKADE_ID,
-  arkadeKnowsBarks,
-  HEX,
-  ID,
-  withArkade,
-  withArkadeAddress,
-  withBark,
-  withBarkHex,
-  withBoth,
-} from "./ark-answers";
 import { axe } from "./axe";
-import { chain, expect, stubRetargets, test } from "./fixtures";
-import { KEPT, LARGE, stubLarge } from "./large-address";
-import { ACINQ, mainnet, penalties, serve } from "./lightning-answers";
-import { serveScore } from "./score-answers";
+import { chain, expect, test } from "./fixtures";
+import { expectFaults, open, PAGES } from "./pages";
+import { tablesSettled } from "./rows";
 
-const REPLACEMENTS = (
-  JSON.parse(
-    readFileSync(new URL("../../fixtures/api-v1/replacements.json", import.meta.url), "utf8"),
-  ) as { all: unknown }
-).all;
 interface Stop {
   /** The element's own number, so a second control of the same name is not the first again. */
   id: number;
@@ -139,9 +120,9 @@ async function press(page: Page, browserName: string, back: boolean, n: number) 
 /**
  * Tabs through the whole page from the top, then back up with Shift+Tab: the skip link comes
  * first, every stop shows its focus ring and is never under the sticky header, and every control
- * in sight is reached in the order the page reads, header, main, then footer.
+ * in sight is reached in the order the page reads, header, main, then footer. Returns what fails.
  */
-async function walk(page: Page, browserName: string) {
+async function walk(page: Page, browserName: string): Promise<string[]> {
   await record(page);
   const controls = await page.evaluate(() => {
     (document.activeElement as HTMLElement | null)?.blur();
@@ -168,19 +149,14 @@ async function walk(page: Page, browserName: string) {
       if (e instanceof HTMLElement || e instanceof SVGElement) e.dataset["walked"] = "";
     }
   }, stops.length);
-  expect.soft(stops[0]?.name, "the first stop").toBe('a "Skip to content"');
-  expect
-    .soft(
-      stops.filter((s) => !s.ring).map((s) => s.name),
-      "stops without a focus ring",
-    )
-    .toEqual([]);
-  expect
-    .soft(
-      stops.filter((s) => s.covered).map((s) => s.name),
-      "stops under the header, tabbing down",
-    )
-    .toEqual([]);
+  const found: string[] = [];
+  if (stops[0]?.name !== 'a "Skip to content"') {
+    found.push(`the first stop is ${stops[0]?.name ?? "nothing"}, not a "Skip to content"`);
+  }
+  for (const s of stops) {
+    if (!s.ring) found.push(`no focus ring: ${s.name}`);
+    if (s.covered) found.push(`under the header, tabbing down: ${s.name}`);
+  }
   const order = await page.evaluate(() => {
     const parts = [".site-header", "#main", ".site-footer"];
     const tabbable = [
@@ -206,14 +182,13 @@ async function walk(page: Page, browserName: string) {
         .filter((p) => p >= 0),
     };
   });
-  expect.soft(order.positive, "a positive tabindex, which reorders the page").toBe(0);
-  expect.soft(order.missed, "controls Tab never reached").toEqual([]);
-  expect
-    .soft(
-      order.parts.every((p, i) => p >= (order.parts[i - 1] ?? 0)),
-      "header, then main, then footer",
-    )
-    .toBe(true);
+  if (order.positive > 0) {
+    found.push(`a positive tabindex on ${order.positive}, which reorders the page`);
+  }
+  for (const m of order.missed) found.push(`Tab never reaches ${m}`);
+  if (!order.parts.every((p, i) => p >= (order.parts[i - 1] ?? 0))) {
+    found.push("the stops are not header, then main, then footer");
+  }
   // Back up the page from the last stop: focus scrolled into view from below must clear the
   // sticky header.
   // at[0] is focus before the first press, so the last stop's element is at[stops.length].
@@ -224,8 +199,10 @@ async function walk(page: Page, browserName: string) {
   await press(page, browserName, true, stops.length - 1);
   // The first noted is the last stop itself, focused from a script rather than by a key.
   const { seen, now } = await noted(page);
-  const back = [...seen.slice(1), now].filter((s) => s?.covered).map((s) => s?.name);
-  expect.soft(back, "stops under the header, tabbing up").toEqual([]);
+  for (const s of [...seen.slice(1), now]) {
+    if (s?.covered) found.push(`under the header, tabbing up: ${s.name}`);
+  }
+  return found;
 }
 
 /** Records every animation that moves something, from the first paint on. */
@@ -251,218 +228,108 @@ const watchMotion = (page: Page) =>
 const moved = (page: Page) =>
   page.evaluate(() => [...(window as unknown as { moved: Set<string> }).moved]);
 
-interface PageType {
-  name: string;
-  path: string;
-  /** What the page shows once it has its data. */
-  ready: (page: Page) => ReturnType<Page["getByRole"]>;
-  before?: (page: Page) => Promise<void>;
+/** Content wider than the screen outside anything that scrolls, with every disclosure open. */
+const overflow = (page: Page) =>
+  page.evaluate(() => {
+    for (const d of document.querySelectorAll("details")) d.open = true;
+    const width = document.documentElement.clientWidth;
+    const out: string[] = [];
+    for (const e of document.querySelectorAll("body *")) {
+      const box = e.getBoundingClientRect();
+      if (box.width === 0 || (box.right <= width + 1 && box.left >= -1)) continue;
+      let clipped = false;
+      for (let p = e.parentElement; p && !clipped; p = p.parentElement) {
+        clipped = getComputedStyle(p).overflowX !== "visible";
+      }
+      if (!clipped) out.push(`${e.tagName.toLowerCase()}.${e.getAttribute("class") ?? ""}`);
+    }
+    return { scroll: document.documentElement.scrollWidth - width, out: out.slice(0, 5) };
+  });
+
+/**
+ * WCAG's reflow at 320 px, and a large text size: a phone's at 320 px and 200% on a desktop, on
+ * the page as loaded, resized and its text set larger, as a reader does. A browser's text size is
+ * its default font size, which Chromium alone lets a test set. Returns what fails.
+ */
+async function largeText(page: Page, browserName: string): Promise<string[]> {
+  const chromium = browserName === "chromium";
+  const sizes = [
+    { width: 320, height: 640, text: 16 },
+    ...(chromium
+      ? [
+          { width: 320, height: 640, text: 24 },
+          { width: 1280, height: 800, text: 32 },
+        ]
+      : []),
+  ];
+  const cdp = chromium ? await page.context().newCDPSession(page) : undefined;
+  // The walk leaves focus on the skip link, which shows while focused. Every disclosure is opened
+  // here, before the first size settles: what one holds can mount a moment after it opens.
+  await page.evaluate(() => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    for (const d of document.querySelectorAll("details")) d.open = true;
+  });
+  const found: string[] = [];
+  for (const size of sizes) {
+    const at = `${size.width} px at ${size.text} px text`;
+    await page.setViewportSize(size);
+    await cdp?.send("Page.setFontSizes", {
+      fontSizes: { standard: size.text, fixed: Math.round((size.text * 13) / 16) },
+    });
+    // At rest, as a page loaded at this size is: anything the change set moving has finished.
+    await page.evaluate(() =>
+      Promise.all(
+        document
+          .getAnimations()
+          .filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
+          .map((a) => a.finished.catch(() => undefined)),
+      ),
+    );
+    await tablesSettled(page);
+    const { scroll, out } = await overflow(page);
+    if (scroll > 0) found.push(`${at}: the page scrolls ${scroll} px sideways`);
+    for (const e of out) found.push(`${at}: ${e} reaches past the window`);
+    const links = await page
+      .getByRole("navigation", { name: "Main" })
+      .getByRole("link")
+      .evaluateAll((all) => all.map((a) => a.getBoundingClientRect()));
+    const apart = links.every((a, i) =>
+      links.slice(i + 1).every((b) => a.right <= b.left + 1 || a.bottom <= b.top + 1),
+    );
+    if (!apart) found.push(`${at}: the sections run into each other`);
+    // A short screen keeps the whole of it for the page: the header scrolls away.
+    const sticky = await page
+      .getByRole("banner")
+      .evaluate((h) => getComputedStyle(h).position === "sticky");
+    if (sticky !== size.height / size.text >= 30) {
+      found.push(`${at}: the header ${sticky ? "sticks on a short screen" : "scrolls away"}`);
+    }
+  }
+  return found;
 }
 
-const PAGES: PageType[] = [
-  {
-    name: "home",
-    path: "/regtest/",
-    ready: (p) => p.getByRole("list", { name: "Mined blocks, newest first" }).getByRole("link"),
-  },
-  { name: "blocks", path: "/regtest/blocks", ready: (p) => p.getByRole("cell").first() },
-  {
-    name: "block",
-    path: `/regtest/block/${chain.blocks[106]}`,
-    ready: (p) => p.getByRole("img", { name: /Map of the block/ }),
-  },
-  {
-    name: "transaction",
-    path: `/regtest/tx/${chain.txs.script_types}`,
-    ready: (p) => p.getByRole("list", { name: "Outputs" }),
-  },
-  {
-    name: "address",
-    path: `/regtest/address/${chain.addresses.p2wpkh}`,
-    ready: (p) => p.getByRole("button", { name: /^Copy the exact balance/ }),
-  },
-  {
-    name: "address as of a block",
-    path: `/regtest/address/${chain.addresses.p2wpkh}?at=106`,
-    ready: (p) => p.getByRole("button", { name: /^Copy the exact balance/ }),
-  },
-  {
-    name: "address above the node's cap",
-    path: `/regtest/address/${LARGE}`,
-    ready: (p) => p.getByRole("table", { name: /^Unconfirmed transactions/ }).getByRole("link"),
-    before: (p) => stubLarge(p),
-  },
-  {
-    name: "projected block",
-    path: "/regtest/block/next",
-    ready: (p) => p.getByRole("heading", { level: 1, name: "Next block" }),
-  },
-  { name: "mempool", path: "/regtest/mempool", ready: (p) => p.getByRole("slider").first() },
-  {
-    name: "fee track record",
-    path: "/regtest/fees/score",
-    ready: (p) => p.getByRole("table").first(),
-    // Mainnet's recorded week: regtest has too few blocks for any share.
-    before: serveScore,
-  },
-  {
-    name: "mining",
-    path: "/regtest/mining",
-    ready: (p) => p.getByRole("table").first(),
-    before: stubRetargets,
-  },
-  {
-    name: "pool",
-    path: "/regtest/mining/pool/unknown",
-    ready: (p) => p.getByRole("table").first(),
-  },
-  {
-    name: "replacements",
-    path: "/regtest/rbf",
-    ready: (p) => p.getByRole("table").first(),
-    // Mainnet's stories (as rbf.e2e.ts draws them): regtest has none this long.
-    before: async (p) => {
-      await p.route(/\/regtest\/api\/v1\/replacements$/, (r) => r.fulfill({ json: REPLACEMENTS }));
-    },
-  },
-  {
-    name: "timestamp",
-    path: "/regtest/timestamp",
-    ready: (p) => p.getByRole("heading", { level: 2, name: "Proof" }),
-  },
-  {
-    name: "not found",
-    path: "/regtest/no/such/page",
-    ready: (p) => p.getByRole("heading", { level: 1, name: "Page not found" }),
-  },
-  {
-    name: "Lightning",
-    path: "/regtest/lightning?interval=1w",
-    ready: (p) => p.getByRole("slider").first(),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "Lightning node",
-    path: `/regtest/lightning/node/${ACINQ}`,
-    ready: (p) => p.getByRole("heading", { name: "At a glance" }),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "Lightning node's closes",
-    path: `/regtest/lightning/node/${ACINQ}?view=closed`,
-    ready: (p) => p.getByRole("heading", { name: "With whom" }),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "Lightning channel",
-    path: "/regtest/lightning/channel/811984x2037x0",
-    ready: (p) => p.getByRole("table").first(),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "Lightning rankings",
-    path: "/regtest/lightning/rankings",
-    ready: (p) => p.getByRole("table").first(),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "Lightning penalties",
-    path: "/regtest/lightning/penalties",
-    ready: (p) => p.getByRole("table").first(),
-    before: (p) => serve(p, { ...mainnet(), penalties: penalties(3) }),
-  },
-  {
-    name: "Lightning search",
-    path: "/regtest/lightning/search?q=acinq",
-    ready: (p) => p.getByRole("link", { name: "ACINQ" }).first(),
-    before: (p) => serve(p, mainnet()),
-  },
-  {
-    name: "address kept by the server's ledger",
-    path: `/regtest/address/${LARGE}?ledger=kept`,
-    ready: (p) =>
-      p.getByRole("table", { name: /^Newest confirmed transactions/ }).getByRole("link"),
-    before: (p) => stubLarge(p, { ledger: () => KEPT }),
-  },
-  {
-    name: "address being added up",
-    path: `/regtest/address/${LARGE}?ledger=adding`,
-    ready: (p) => p.getByRole("region", { name: "Adding up this address for the first time" }),
-    before: (p) => stubLarge(p, { ledger: () => ({ state: "seeding", seconds: 95 }) }),
-  },
-  {
-    name: "Ark entry",
-    path: "/regtest/ark",
-    ready: (p) => p.getByRole("textbox", { name: "VTXO or Ark address" }),
-    before: withBoth,
-  },
-  {
-    // Known to both, which should not happen: the lookup's one state with controls of its own.
-    name: "Ark VTXO lookup, known to both",
-    path: `/regtest/ark/vtxo/${ID}`,
-    ready: (p) => p.getByRole("link", { name: "Arkade", exact: true }),
-    before: async (p) => {
-      await withBoth(p);
-      await arkadeKnowsBarks(p);
-    },
-  },
-  {
-    name: "Bark VTXO",
-    path: `/regtest/ark/bark/vtxo/${ID}`,
-    ready: (p) => p.getByRole("button", { name: "Play exit" }),
-    before: (p) => withBark(p, true),
-  },
-  {
-    name: "Bark VTXO from its hex",
-    path: `/regtest/ark/bark/hex#${HEX}`,
-    ready: (p) => p.getByRole("button", { name: "Play exit" }),
-    before: withBarkHex,
-  },
-  {
-    name: "Arkade VTXO, swept",
-    path: `/regtest/ark/arkade/vtxo/${ARKADE_ID}`,
-    ready: (p) => p.getByRole("button", { name: "Play exit" }),
-    before: (p) => withArkade(p),
-  },
-  {
-    name: "Arkade VTXO, unspent and not settled",
-    path: `/regtest/ark/arkade/vtxo/${ARKADE_ID}`,
-    ready: (p) => p.getByRole("button", { name: "Play exit" }),
-    before: (p) => withArkade(p, true),
-  },
-  {
-    name: "Arkade address",
-    path: `/regtest/ark/arkade/address/${ARKADE_ADDRESS}`,
-    ready: (p) => p.getByRole("table", { name: /VTXOs, newest first/ }),
-    before: (p) => withArkadeAddress(p, true),
-  },
-];
-
-/** Opens a page type and waits until its data is drawn and nothing is still loading. */
-async function open(page: Page, t: PageType) {
-  await t.before?.(page);
-  await page.goto(t.path);
-  await expect(t.ready(page).first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator('.state--loading, [aria-busy="true"]')).toHaveCount(0);
-}
-
-test.describe("every page type", () => {
+test.describe("every page", () => {
   // The address above the cap is refused its totals (a stand-in 503), as the node does.
   test.use({ reducedMotion: "reduce", consoleErrorsAllowed: [/status of 503/] });
-  for (const t of PAGES) {
-    test(`${t.name}: no checker finding in either theme, a keyboard walk, and no movement under reduced motion`, async ({
+  for (const swept of PAGES) {
+    test(`${swept.path}: no checker finding in either theme, a keyboard walk, no movement under reduced motion, and reflow at large text sizes`, async ({
       page,
       browserName,
     }) => {
       await watchMotion(page);
-      await open(page, t);
-      expect.soft(await axe(page), "axe-core, light").toEqual([]);
+      await open(page, swept);
+      const found = (await axe(page)).map((f) => `axe-core, light: ${f}`);
       await page.emulateMedia({ colorScheme: "dark" });
-      expect.soft(await axe(page, ["color-contrast"]), "contrast, dark").toEqual([]);
+      found.push(...(await axe(page, ["color-contrast"])).map((f) => `contrast, dark: ${f}`));
       await page.emulateMedia({ colorScheme: "light" });
       // A keyboard is a desktop's; a phone's run checks the rest.
-      if ((page.viewportSize()?.width ?? 0) > 640) await walk(page, browserName);
-      expect.soft(await moved(page), "movement under reduced motion").toEqual([]);
+      const desktop = (page.viewportSize()?.width ?? 0) > 640;
+      const walked = desktop ? await walk(page, browserName) : undefined;
+      found.push(...(await moved(page)).map((m) => `moves under reduced motion: ${m}`));
+      expectFaults(found, swept, "a11y");
+      if (walked) expectFaults(walked, swept, "walk");
+      // Last: it opens every disclosure and changes the window and the text size.
+      expectFaults(await largeText(page, browserName), swept, "largeText");
     });
   }
 });
@@ -517,7 +384,10 @@ test("Escape closes the network menu and the search's answer", async ({ page, br
   await page.route("**/app/config", (r) =>
     r.fulfill({ json: { networks: ["regtest", "signet"], version: "test" } }),
   );
-  await open(page, PAGES[4] as PageType);
+  await open(page, {
+    path: `/regtest/address/${chain.addresses.p2tr}`,
+    ready: (p) => p.getByRole("button", { name: /^Copy the exact balance/ }),
+  });
 
   const network = page.getByRole("button", { name: /^Network: Regtest/ });
   await network.focus();
@@ -598,73 +468,3 @@ test("the block field has no checker finding, open and refusing what was typed, 
   await page.getByRole("button", { name: "Another block" }).click();
   expect.soft(await axe(page), "axe-core, a parameter that is no height, dark").toEqual([]);
 });
-
-/** Content wider than the screen outside anything that scrolls, with every disclosure open. */
-const overflow = (page: Page) =>
-  page.evaluate(() => {
-    for (const d of document.querySelectorAll("details")) d.open = true;
-    const width = document.documentElement.clientWidth;
-    const out: string[] = [];
-    for (const e of document.querySelectorAll("body *")) {
-      const box = e.getBoundingClientRect();
-      if (box.width === 0 || (box.right <= width + 1 && box.left >= -1)) continue;
-      let clipped = false;
-      for (let p = e.parentElement; p && !clipped; p = p.parentElement) {
-        clipped = getComputedStyle(p).overflowX !== "visible";
-      }
-      if (!clipped) out.push(`${e.tagName.toLowerCase()}.${e.getAttribute("class") ?? ""}`);
-    }
-    return { scroll: document.documentElement.scrollWidth - width, out: out.slice(0, 5) };
-  });
-
-/**
- * WCAG's reflow at 320 px, and a large text size: a phone's at 320 px and 200% on a desktop. A
- * browser's text size is its default font size, which Chromium alone lets a test set.
- */
-// The blocks list and the transaction page, as the page types above wait for them.
-for (const [name, type] of [
-  ["the shell", PAGES[1]],
-  ["a dense page", PAGES[3]],
-] as const) {
-  test(`${name} reflows at 320 px and at a large text size, nothing cut or overlapping`, async ({
-    page,
-    browserName,
-  }) => {
-    const sizes = [
-      { width: 320, height: 640, text: 16 },
-      ...(browserName === "chromium"
-        ? [
-            { width: 320, height: 640, text: 24 },
-            { width: 1280, height: 800, text: 32 },
-          ]
-        : []),
-    ];
-    for (const size of sizes) {
-      const label = `${size.width} px at ${size.text} px text`;
-      await page.setViewportSize(size);
-      if (browserName === "chromium") {
-        const cdp = await page.context().newCDPSession(page);
-        await cdp.send("Page.setFontSizes", {
-          fontSizes: { standard: size.text, fixed: Math.round((size.text * 13) / 16) },
-        });
-      }
-      await open(page, type as PageType);
-      expect(await overflow(page), label).toEqual({ scroll: 0, out: [] });
-      const links = await page
-        .getByRole("navigation", { name: "Main" })
-        .getByRole("link")
-        .evaluateAll((all) => all.map((a) => a.getBoundingClientRect()));
-      const apart = links.every((a, i) =>
-        links.slice(i + 1).every((b) => a.right <= b.left + 1 || a.bottom <= b.top + 1),
-      );
-      expect(apart, `${label}: the sections apart`).toBe(true);
-      // A short screen keeps the whole of it for the page: the header scrolls away.
-      const sticky = await page
-        .getByRole("banner")
-        .evaluate((h) => getComputedStyle(h).position === "sticky");
-      expect(sticky, `${label}: the header sticks only on a screen tall enough`).toBe(
-        size.height / size.text >= 30,
-      );
-    }
-  });
-}
