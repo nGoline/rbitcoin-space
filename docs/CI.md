@@ -55,7 +55,7 @@ Outside the PR path, daily and when a lockfile changes on `master`: the [depende
 
 ## Models
 
-A test tries the orders of events its author thought of. Where requests or tasks share state, the bug is an order nobody thought of: two requests leaving one shared node call together left it in memory for good (#88). The test written for that fix runs 20,000 rounds on eight threads to meet the order by chance: with the bug put back it left 1 to 10 calls behind in each of ten runs, and passed once on a busy machine. A model checker tries every order, and finds this one in five steps.
+A test tries the orders of events its author thought of. Where requests or tasks share state, the bug is an order nobody thought of: two requests leaving one shared node call together left it in memory for good (#88). The test written for that fix runs 20,000 rounds on eight threads to meet the order by chance: with the bug put back it left 1 to 10 calls behind in each of ten runs, and passed once on a busy machine. A model checker tries every order, and finds this one in six steps.
 
 Each folder under [`dev/models/`](../dev/models) holds one model: a TLA+ spec of a piece of bookkeeping, a `README.md` that maps each step of the spec to the code and says what the model leaves out, and a `model.json` for the check. [`dev/models/check.py`](../dev/models/check.py) runs them all with TLC, a prebuilt checker held to a pinned checksum, on the Java the runner already has:
 
@@ -67,6 +67,7 @@ Each folder under [`dev/models/`](../dev/models) holds one model: a TLA+ spec of
 |---|---|---|
 | [`flights`](../dev/models/flights/README.md) | Identical requests sharing one call: a node call (`Flights` in `crates/server/src/esplora.rs`), a kept answer's computation (`Answers` in `answers.rs`) and a card's build (`Cards` in `cards.rs`) | A call nobody holds never stays in the map; requests for one key never wait on two calls at once |
 | [`batch-ends`](../dev/models/batch-ends/README.md) | A Lightning peer's end markers for our batches of channel queries (`PeerRange` in `crates/ln/src/gossip.rs`) | A marker ends only the batch it answers |
+| [`fee-hold`](../dev/models/fee-hold/README.md) | A `fees` message waiting for its block's announcement (`run` and `serve` in `crates/server/src/ws/fees.rs`) | A message never goes out ahead of its block, never waits longer than the hold, and the hold's deadline ends the hold |
 
 How to read a failure, change a model with its code, or add one: the `verify-models` skill ([`.claude/skills/verify-models/SKILL.md`](../.claude/skills/verify-models/SKILL.md)).
 

@@ -8,6 +8,7 @@ when it should break, or code that changed since the spec was last read against 
 a model whose rules do not check out.
 """
 
+import functools
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 TLC_VERSION = "1.7.4"
@@ -27,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
 
+@functools.cache
 def tlc_jar() -> Path:
     """The checker, downloaded once and held to its pinned checksum."""
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "rbitcoin-space"
@@ -43,6 +46,7 @@ def tlc_jar() -> Path:
     return jar
 
 
+@functools.cache
 def java() -> str:
     home = os.environ.get("JAVA_HOME")
     found = shutil.which("java", path=f"{home}/bin" if home else None) or shutil.which("java")
@@ -51,8 +55,13 @@ def java() -> str:
     return found
 
 
-def broken_rule(folder: Path, model: dict, constants: dict, tmp: Path) -> str | None:
+def broken_rule(folder: Path, model: dict, constants: dict) -> str | None:
     """Runs TLC with `constants`; the rule it found broken, or None when every rule holds."""
+    with tempfile.TemporaryDirectory() as tmp:
+        return tlc(folder, model, constants, Path(tmp))
+
+
+def tlc(folder: Path, model: dict, constants: dict, tmp: Path) -> str | None:
     cfg = tmp / "run.cfg"
     lines = [f"    {k} = {v}" for k, v in {**model["constants"], **constants}.items()]
     cfg.write_text(
@@ -60,7 +69,10 @@ def broken_rule(folder: Path, model: dict, constants: dict, tmp: Path) -> str | 
         "INVARIANTS " + " ".join(model["rules"]) + "\n"
     )
     run = subprocess.run(
-        [java(), "-XX:+UseParallelGC", "-cp", str(tlc_jar()), "tlc2.TLC", "-workers", "1"]
+        # A temp folder of its own: TLC unpacks its standard modules there, and checks that run
+        # side by side would overwrite each other's.
+        [java(), "-XX:+UseParallelGC", f"-Djava.io.tmpdir={tmp}", "-cp", str(tlc_jar())]
+        + ["tlc2.TLC", "-workers", "1"]
         + ["-metadir", str(tmp / "states"), "-config", str(cfg), model["spec"]],
         cwd=folder,
         capture_output=True,
@@ -91,19 +103,20 @@ def check(folder: Path, pin: bool) -> list[str]:
     path = folder / "model.json"
     model = json.loads(path.read_text())
     faults = []
-    with tempfile.TemporaryDirectory() as tmp:
-        for today in model["today"]:
-            broke = broken_rule(folder, model, today, Path(tmp))
-            if broke:
-                faults.append(f"{model['spec']}: today's design breaks {broke} with {today}")
-        for mistake in model["mistakes"]:
-            broke = broken_rule(folder, model, mistake["constants"], Path(tmp))
-            if broke != mistake["breaks"]:
-                faults.append(
-                    f"{model['spec']}: the mistake \"{mistake['was']}\" must break "
-                    f"{mistake['breaks']} and broke {broke or 'nothing'}: the model no longer "
-                    f"catches it"
-                )
+    # One checker per processor: each run is a JVM of its own, and a job's time is the sum otherwise.
+    runs = model["today"] + [m["constants"] for m in model["mistakes"]]
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        broke = list(pool.map(lambda constants: broken_rule(folder, model, constants), runs))
+    for today, rule in zip(model["today"], broke):
+        if rule:
+            faults.append(f"{model['spec']}: today's design breaks {rule} with {today}")
+    for mistake, rule in zip(model["mistakes"], broke[len(model["today"]) :]):
+        if rule != mistake["breaks"]:
+            faults.append(
+                f"{model['spec']}: the mistake \"{mistake['was']}\" must break "
+                f"{mistake['breaks']} and broke {rule or 'nothing'}: the model no longer "
+                f"catches it"
+            )
     for cover in model["covers"]:
         now = hashlib.sha256(region(cover).encode()).hexdigest()
         if pin and not faults:
@@ -125,6 +138,8 @@ def main() -> None:
     if sys.argv[1:] and not pin:
         sys.exit(__doc__)
     folders = sorted(p.parent for p in HERE.glob("*/model.json"))
+    # Once, before the checks run side by side and would each download it.
+    tlc_jar(), java()
     faults = [f for folder in folders for f in check(folder, pin)]
     for fault in faults:
         print(f"::error::{fault}" if os.environ.get("GITHUB_ACTIONS") else fault, file=sys.stderr)

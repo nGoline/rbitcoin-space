@@ -33,6 +33,12 @@
       "from": "^    pub\\(crate\\) fn range_tick\\(",
       "to": "^    /// Judges ids asked of a peer",
       "sha256": "10e3158fe4b4c0298c9bc1423377cc08c348ccb1d1521d5ad21044a9526e4760"
+    },
+    {
+      "file": "crates/ln/src/gossip.rs",
+      "from": "^    fn next_batch\\(",
+      "to": "^    \\}$",
+      "sha256": "9997d1e6d635a5dd3df21669abe7a9e5a269be4d86d06be34cd1f4ad8e872baf"
     }
   ]
 }
