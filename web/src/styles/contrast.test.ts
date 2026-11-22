@@ -74,6 +74,14 @@ describe("contrast from the tokens", () => {
   it("keeps the two copies of the dark theme identical", () => {
     const os = block('@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]) {');
     expect(os).toStrictEqual(block(':root[data-theme="dark"] {'));
+    // The tile tint is a number, not a colour, so block() leaves it out.
+    const tint = (opening: string) => {
+      const start = tokens.indexOf(opening);
+      return /--tile-tint: ([\d.]+)/.exec(tokens.slice(start, tokens.indexOf("}", start)))?.[1];
+    };
+    expect(tint('@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]) {')).toBe(
+      tint(':root[data-theme="dark"] {'),
+    );
   });
 
   describe.each([
@@ -88,6 +96,31 @@ describe("contrast from the tokens", () => {
       expect(short(theme, MARKS, SURFACES, 3)).toStrictEqual([]);
       // A QR code's card stays light in both themes (components/qr/draw.ts holds a node's ink to this).
       expect(short(theme, ["qr-ink"], ["qr-paper"], 4.5)).toStrictEqual([]);
+    });
+
+    it(`keeps a block tile's figures readable over its tinted layers, ${name}`, () => {
+      const scope = name === "light" ? ":root {" : ':root[data-theme="dark"] {';
+      const start = tokens.indexOf(scope);
+      const body = tokens.slice(start, tokens.indexOf("}", start));
+      const tint = Number(/--tile-tint: ([\d.]+)/.exec(body)?.[1]);
+      expect(tint).toBeGreaterThan(0);
+      const hex = (n: string) => rgb(theme.get(n) ?? "");
+      // Mined tiles are the surface, projected ones the strip's sunken band; the neutral gauge is
+      // the line tone, under the figures until the layers arrive.
+      const faint: string[] = [];
+      for (const text of ["color-text", "color-text-muted"]) {
+        const under = [
+          ...["color-surface", "color-surface-sunken"].flatMap((s) =>
+            range("fee", 12).map((f) => [`${f} on ${s}`, mix(hex(f), tint, hex(s))] as const),
+          ),
+          ["color-line", hex("color-line")] as const,
+        ];
+        for (const [what, bg] of under) {
+          const r = ratio(hex(text), bg);
+          if (r < 4.5) faint.push(`${text} over ${what} ${r.toFixed(2)}`);
+        }
+      }
+      expect(faint).toStrictEqual([]);
     });
 
     it(`steps the forwarding-rate ramp in lightness, away from the surface, ${name}`, () => {
