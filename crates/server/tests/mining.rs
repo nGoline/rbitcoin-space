@@ -62,6 +62,15 @@ async fn fill(dir: &Path, heights: impl Iterator<Item = u32>) {
 /// [`fill`] with the block at `TIP` stamped `tip_time`.
 async fn fill_to(dir: &Path, heights: impl Iterator<Item = u32>, tip_time: u64) {
     let base = tip_time - u64::from(TIP) * 600;
+    fill_at(dir, heights, move |h| base + u64::from(h) * 600).await;
+}
+
+/// [`fill`] with each height stamped `time(height)`.
+async fn fill_at(
+    dir: &Path,
+    heights: impl Iterator<Item = u32>,
+    time: impl Fn(u32) -> u64 + Send + 'static,
+) {
     let rows: Vec<u32> = heights.collect();
     let store = Store::open(dir, "regtest", Options::default()).unwrap();
     store
@@ -81,7 +90,7 @@ async fn fill_to(dir: &Path, heights: impl Iterator<Item = u32>, tip_time: u64) 
                 stmt.execute(params![
                     h,
                     &hash[..],
-                    (base + u64::from(h) * 600) as i64,
+                    time(h) as i64,
                     1 + h % 3,
                     1000 + h,
                     4000 + h,
@@ -685,6 +694,69 @@ async fn hashrate_points_on_a_half_filled_table_are_exact_at_any_hour() {
         across_retarget,
         "some hour puts a week across the retarget at 2016"
     );
+}
+
+/// Testnet 5 in November 2026: its hashrate fell by two thirds, and its last 1,008 blocks reached
+/// back four days. Here the network loses three quarters of its hashrate at height 1,000: a block
+/// every 600 s, then every 2,400 s up to 1,100, a few minutes ago, so even the last 144 blocks
+/// reach into the fast stretch. The estimates named for a day, three days and a week count the
+/// blocks of that time; the 1,008 blocks of `currentHashrate` still reach back nine days. Every
+/// window's edge falls 300 s from a block, so the server's clock and the test's agree on which
+/// blocks are in. A history that starts inside a window gives no estimate for it.
+#[tokio::test]
+async fn estimates_named_for_a_time_cover_that_time() {
+    const SLOW: u32 = 1000;
+    const TOP: u32 = 1100;
+    let tip_time = now() - 300;
+    let time = move |h: u32| {
+        let slow = u64::from(TOP - h.max(SLOW)) * 2400;
+        tip_time - slow - u64::from(SLOW.saturating_sub(h)) * 600
+    };
+    // Difficulty 1 throughout: a block's work is 2^32 hashes.
+    let work = 4_294_967_296.0;
+    let close = |v: &Value, field: &str, want: f64| {
+        let h = v[field].as_f64().unwrap();
+        assert!((h / want - 1.0).abs() < 1e-6, "{field}: {h}, want {want}");
+    };
+
+    let d = dir("slowdown");
+    fill_at(&d.0, 0..=TOP, time).await;
+    let (addr, _) = start(&d.0).await;
+    let v = get(&addr, &format!("{V1}/pools/1w")).await.json();
+    // The day: 36 slow blocks (1,065 to 1,100), timed from 1,064. The last 144 blocks would
+    // say 144 blocks over 266,400 s, 44 of them fast.
+    close(&v, "lastEstimatedHashrate", work / 2400.0);
+    // Three days: 969 to 1,100, timed from 968.
+    close(&v, "lastEstimatedHashrate3d", 132.0 * work / 259_200.0);
+    // The week: 393 to 1,100, timed from 392.
+    close(&v, "lastEstimatedHashrate1w", 708.0 * work / 604_800.0);
+    // `currentHashrate` keeps its 1,008 blocks (93 to 1,100), and so its threefold overstatement.
+    let current = get(&addr, &format!("{V1}/hashrate/1w")).await.json()["currentHashrate"]
+        .as_f64()
+        .unwrap();
+    let want = 1008.0 * work / f64::from((TOP - SLOW) * 2400 + (SLOW - 92) * 600);
+    assert!((current / want - 1.0).abs() < 1e-6, "{current} {want}");
+    assert!(current > 3.0 * work / 2400.0);
+
+    // A history from 600, five and a half days back: the week is not all stored.
+    let d = dir("slowdown-short");
+    fill_at(&d.0, 600..=TOP, time).await;
+    let (addr, _) = start(&d.0).await;
+    let v = get(&addr, &format!("{V1}/pools/24h")).await.json();
+    close(&v, "lastEstimatedHashrate", work / 2400.0);
+    close(&v, "lastEstimatedHashrate3d", 132.0 * work / 259_200.0);
+    assert_eq!(v["lastEstimatedHashrate1w"], Value::Null);
+
+    // A history from 1,080, 14 hours back: not even the day. The ranking and a pool's own page
+    // both give no estimate rather than one from the part held.
+    let d = dir("slowdown-day");
+    fill_at(&d.0, 1080..=TOP, time).await;
+    let (addr, _) = start(&d.0).await;
+    let v = get(&addr, &format!("{V1}/pools/24h")).await.json();
+    assert_eq!(v["lastEstimatedHashrate"], Value::Null);
+    let r = get(&addr, &format!("{V1}/pool/foundryusa")).await;
+    assert_eq!(r.status, 200, "{r:?}");
+    assert_eq!(r.json()["estimatedHashrate"], Value::Null);
 }
 
 #[tokio::test]
