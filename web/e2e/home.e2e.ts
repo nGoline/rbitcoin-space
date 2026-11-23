@@ -36,8 +36,12 @@ test("a busy answer for the tiles' summaries is asked again, and the tiles get t
   // summary.rs, `summary_busy`): seen once in 300 runs two seconds after start under load.
   let refused = 0;
   const answered: number[] = [];
+  const urls: string[] = [];
   page.on("response", (r) => {
-    if (r.url().includes("/regtest/app/blocks/summary?")) answered.push(r.status());
+    if (r.url().includes("/regtest/app/blocks/summary?")) {
+      answered.push(r.status());
+      urls.push(r.url());
+    }
   });
   await page.route(
     (url) => url.pathname === "/regtest/app/blocks/summary",
@@ -56,6 +60,11 @@ test("a busy answer for the tiles' summaries is asked again, and the tiles get t
   await expect(newest.first()).toHaveAccessibleName(/^Block 110,/);
   // Asked again after the second the server named, and answered.
   await expect.poll(() => answered).toStrictEqual([503, 200]);
+  // Even the first paint's ask names the page's release, so a new one never reads an old cached
+  // miner; a build with no commit (`unknown`) names none.
+  const release = await page.locator('meta[name="revision"]').getAttribute("content");
+  const named = release !== null && /^[0-9a-f]{40}$/.test(release) ? release : null;
+  for (const url of urls) expect(new URL(url).searchParams.get("r")).toBe(named);
 });
 
 test("the home page fits a phone without scrolling sideways", async ({ page }) => {

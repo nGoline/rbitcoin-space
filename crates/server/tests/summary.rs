@@ -416,7 +416,11 @@ async fn facts_records_and_batches_are_served_and_cached() {
 
     let r = get(
         &addr,
-        &format!("/regtest/app/blocks/summary?hashes={b},{a}%2C{b}"),
+        // As the page asks, with the release it was built with (docs/FRONTEND.md).
+        &format!(
+            "/regtest/app/blocks/summary?hashes={b},{a}%2C{b}&r={}",
+            rbitcoin_space::REVISION
+        ),
         "192.0.2.1",
     )
     .await;
@@ -442,6 +446,19 @@ async fn facts_records_and_batches_are_served_and_cached() {
         !body.contains("onerror") && !body.contains("/ViaBTC/"),
         "{body}"
     );
+    // A page of another release, open across a deploy, gets the facts with no copy kept under
+    // its URL, which that release would read if it came back.
+    let other = "0".repeat(40);
+    assert_ne!(other, rbitcoin_space::REVISION);
+    let foreign = get(
+        &addr,
+        &format!("/regtest/app/blocks/summary?hashes={a}&r={other}"),
+        "192.0.2.1",
+    )
+    .await;
+    assert_eq!(foreign.status, 200, "{foreign:?}");
+    assert_eq!(foreign.header("cache-control"), Some("no-store"));
+    assert_eq!(foreign.json()[0]["id"], a.as_str());
 
     // A coinbase laid out as Stratum V2 writes it is marked, alone and in a batch, and the mark
     // is a boolean: the tag's words stay out of the facts.

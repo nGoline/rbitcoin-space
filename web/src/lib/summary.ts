@@ -113,6 +113,20 @@ export function clearSummaries(): void {
 }
 
 /**
+ * The commit the server wrote into the page (`<meta name="revision">`), or empty without one (a
+ * build with no commit, a test, the dev server). A release can name a block's miner differently,
+ * so each release's summaries have their own URLs in the browser's cache, and a page that cannot
+ * name its release does not use that cache.
+ */
+function pageRelease(): string {
+  const r =
+    typeof document === "undefined"
+      ? null
+      : document.querySelector('meta[name="revision"]')?.getAttribute("content");
+  return typeof r === "string" && /^[0-9a-f]{40}$/.test(r) ? r : "";
+}
+
+/**
  * The summaries of up to ten blocks in one request, retrying when the server says it is busy (503)
  * or this client asked for too much (429), as long as it says to wait. Summaries already known are
  * not asked for again. Resolves with every summary it has, keyed by hash.
@@ -123,15 +137,14 @@ export async function fetchSummaries(
   signal?: AbortSignal,
 ): Promise<Map<string, BlockSummary>> {
   const missing = [...new Set(hashes)].filter((h) => !known.has(key(network, h)));
+  const release = pageRelease();
+  const tail = release === "" ? "" : `&r=${release}`;
+  const cached = release !== "";
   for (let i = 0; i < missing.length; i += SUMMARY_BATCH) {
     const part = missing.slice(i, i + SUMMARY_BATCH);
-    const path = `/blocks/summary?hashes=${part.map((h) => encodeURIComponent(h)).join(",")}`;
+    const path = `/blocks/summary?hashes=${part.map((h) => encodeURIComponent(h)).join(",")}${tail}`;
     // oxlint-disable-next-line no-await-in-loop -- one batch at a time, so a page never floods the server
-    const reply = await fetchApp<unknown>(
-      network,
-      path,
-      signal ? { signal, cached: true } : { cached: true },
-    );
+    const reply = await fetchApp<unknown>(network, path, signal ? { signal, cached } : { cached });
     if (Array.isArray(reply)) {
       for (const s of reply) if (isSummary(s)) rememberSummary(network, s);
     }
